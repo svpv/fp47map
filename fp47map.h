@@ -31,6 +31,17 @@
 #pragma once
 #include <stdint.h>
 
+// The probability of a birthday collision depends on the logsize parameter,
+// the logarithm of the expected size of the map (e.g. 20 for 1M strings).
+// Internally, each fingerprint is digested into a reduced 32-bit hash value
+// and its logsize-bit index, so effectively only 32+logsize bits out of 64
+// bits are used.  Hence the probability of inserting 1 million strings without
+// collisions is about 1e-4, and the probability of successfully inserting 8M
+// strings is about 1e-3 (provided that logsize=20 resp. 23 was specified).
+// The probability of insertion failure is typically much smaller, but the
+// structure has only a limited capability for resizing.  Thus logsize should
+// not be too small, and had better be realistic, otherwise things might not
+// work as expected.
 struct fpmap *fpmap_new(int logsize);
 void fpmap_free(struct fpmap *map);
 
