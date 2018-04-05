@@ -45,5 +45,23 @@
 struct fpmap *fpmap_new(int logsize);
 void fpmap_free(struct fpmap *map);
 
-// Get the position on a 64-bit fingerprint.
-uint32_t *fpmap_get(struct fpmap *map, uint64_t fp);
+struct fpmap {
+    uint32_t *(*get)(void *map, uint64_t);
+    uint32_t *(*has)(void *map, uint64_t);
+};
+
+// Get the position on a 64-bit fingerprint.  Returns NULL on insertion failure,
+// which means that a series of evictions failed, and an unrelated slot has been
+// kicked out.  Unless false negatives are permitted, the only option is to
+// rebuild the map from scratch, hashing the strings with a different hash seed.
+uint32_t *fpmap_get(struct fpmap *map, uint64_t fp)
+{
+    return map->get(map, fp);
+}
+
+// Get the position on a 64-bit fingerprint, but only if the slot was
+// previously created with fpmap_get.  Returns NULL otherwise.
+uint32_t *fpmap_has(struct fpmap *map, uint64_t fp)
+{
+    return map->has(map, fp);
+}
