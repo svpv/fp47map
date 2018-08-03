@@ -88,6 +88,10 @@ struct map {
     } while (0)
 #define Sort2 Sort2swap
 
+#ifdef __SSE2__
+#include <emmintrin.h>
+#endif
+
 // Template for map->find virtual functions.
 static inline size_t t_find(struct map *map, uint64_t fp, uint32_t pos[10],
 	uint8_t bsize, bool resized, uint8_t nstash)
@@ -141,6 +145,37 @@ static inline size_t t_find(struct map *map, uint64_t fp, uint32_t pos[10],
     struct stash *st = &map->stash;
     if (nstash > 0) AddMatch(stkey, st->key[0], st->pos[0]);
     if (nstash > 1) AddMatch(stkey, st->key[1], st->pos[1]);
+
+#if defined(__SSE2__) && defined(__clang__)
+#define CheckBucket4(b)						\
+    do {							\
+	__m128i b01 = _mm_loadu_si128((__m128i *) b + 0);	\
+	__m128i b23 = _mm_loadu_si128((__m128i *) b + 1);	\
+	b01 = _mm_cmpeq_epi32(b01, fp32x2);			\
+	b23 = _mm_cmpeq_epi32(b23, fp32x2);			\
+	int m01 = _mm_movemask_epi8(b01);			\
+	int m23 = _mm_movemask_epi8(b23);			\
+	if (unlikely(m01)) {					\
+	    if (m01 & 0x000f)					\
+		pos[n++] = b[0].pos;				\
+	    if (m01 & 0x0f00)					\
+		pos[n++] = b[1].pos;				\
+	}							\
+	if (unlikely(m23)) {					\
+	    if (m23 & 0x000f)					\
+		pos[n++] = b[2].pos;				\
+	    if (m23 & 0x0f00)					\
+		pos[n++] = b[3].pos;				\
+	}							\
+    } while (0)
+
+    if (bsize == 4) {
+	__m128i fp32x2 = _mm_set_epi32(-1, fp32, -1, fp32);
+	CheckBucket4(b1);
+	CheckBucket4(b2);
+	return n;
+    }
+#endif
 
     // Check the first bucket.
     AddMatch(fp32, b1[0].fp32, b1[0].pos);
