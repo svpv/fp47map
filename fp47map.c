@@ -58,6 +58,36 @@ struct map {
 // The inline functions below rely heavily on constant propagation.
 #define inline inline __attribute__((always_inline))
 
+// How do we sort two numbers?  That's a major problem in computer science.
+// I thought that cmov might help, but this does not seem to be the case.
+#define Sort2asm(i1, i2)		\
+    do {				\
+	size_t i3;			\
+	asm("cmp %[i1],%[i2]\n\t"	\
+	    "cmovb %[i1],%[i3]\n\t"	\
+	    "cmovb %[i2],%[i1]\n\t"	\
+	    "cmovb %[i3],%[i2]\n\t"	\
+	    : [i1] "+r" (i1),		\
+	      [i2] "+r" (i2),		\
+	      [i3] "=rm" (i3)		\
+	    :: "cc");			\
+    } while (0)
+#define Sort2cmov(i1, i2)		\
+    do {				\
+	size_t i3 = i1;			\
+	size_t i4 = i2;			\
+	i1 = (i1 > i2) ? i2 : i1;	\
+	i2 = (i3 > i4) ? i3 : i2;	\
+    } while (0)
+#define Sort2swap(i1, i2)		\
+    do {				\
+	if (i1 > i2) {			\
+	    size_t i3 = i1;		\
+	    i1 = i2, i2 = i3;		\
+	}				\
+    } while (0)
+#define Sort2 Sort2swap
+
 // Template for map->find virtual functions.
 static inline size_t t_find(struct map *map, uint64_t fp, uint32_t pos[10],
 	uint8_t bsize, bool resized, uint8_t nstash)
@@ -72,16 +102,6 @@ static inline size_t t_find(struct map *map, uint64_t fp, uint32_t pos[10],
     size_t i2 = i1 ^ fp;
     i1 &= map->mask0;
     i2 &= map->mask0;
-
-    // How do we sort two numbers?  We try to elicit cmov instructions,
-    // two in a row.  GCC is reluctant to do this, so we try extra hard.
-#define Sort2(i1, i2)			\
-    do {				\
-	size_t i3 = i1;			\
-	size_t i4 = i2;			\
-	i1 = (i1 > i2) ? i2 : i1;	\
-	i2 = (i3 > i4) ? i3 : i2;	\
-    } while (0)
 
     // Need to sort i1 < i2?
     if (resized || nstash)
