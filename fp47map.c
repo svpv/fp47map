@@ -92,6 +92,19 @@ struct map {
 #include <emmintrin.h>
 #endif
 
+#include <limits.h>
+
+// On 64-bit systems, assume malloc'd chunks are aligned to 16 bytes.
+// This should help to elicit aligned SSE2 instructions.
+#if SIZE_MAX > UINT32_MAX
+#define A16(p) __builtin_assume_aligned(p, 16)
+#else
+// Already assuming that "struct bent" is 8-byte aligned.
+#define A16(p) __builtin_assume_aligned(p, 8)
+// Disable SSE2 aligned intrinsics.
+#define _mm_load_si128 _mm_loadu_si128
+#endif
+
 // Template for map->find virtual functions.
 static inline size_t t_find(struct map *map, uint64_t fp, uint32_t pos[10],
 	uint8_t bsize, bool resized, uint8_t nstash)
@@ -149,8 +162,8 @@ static inline size_t t_find(struct map *map, uint64_t fp, uint32_t pos[10],
 #if defined(__SSE2__) && (__clang__ || __GNUC__ >= 8)
 #define CheckBucket4(b)						\
     do {							\
-	__m128i b01 = _mm_loadu_si128((__m128i *) b + 0);	\
-	__m128i b23 = _mm_loadu_si128((__m128i *) b + 1);	\
+	__m128i b01 = _mm_load_si128((__m128i *) b + 0);	\
+	__m128i b23 = _mm_load_si128((__m128i *) b + 1);	\
 	b01 = _mm_cmpeq_epi32(b01, fp32x2);			\
 	b23 = _mm_cmpeq_epi32(b23, fp32x2);			\
 	int m01 = _mm_movemask_epi8(b01);			\
@@ -224,16 +237,6 @@ static inline bool justAdd(struct bent *b1, struct bent *b2,
 }
 
 #include <string.h>
-#include <limits.h>
-
-// On 64-bit systems, assume malloc'd chunks are aligned to 16 bytes.
-// This should help to elicit aligned SSE2 instructions.
-#if SIZE_MAX > UINT32_MAX
-#define A16(p) __builtin_assume_aligned(p, 16)
-#else
-// Already assuming that "struct bent" is 8-byte aligned.
-#define A16(p) __builtin_assume_aligned(p, 8)
-#endif
 
 // Unlike memcpy, memmove(dst, src, 16) may end up not inlined.
 // Hence the specialized code to shift two bucket entries down.
