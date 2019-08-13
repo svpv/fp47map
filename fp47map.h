@@ -93,6 +93,15 @@ static_assert(offsetof(struct fpmap_bent, fptag) == FPMAP_BENT_SIZE - FPMAP_FPTA
 struct fpmap *fpmap_new(int logsize);
 void fpmap_free(struct fpmap *map);
 
+// Since the buckets are fixed-size, the map guarantees O(1) worst-case lookup.
+// Use FPMAP_MAXFIND to specify the array size for fpmap_find().
+#define FPMAP_MAXFIND 10
+#ifdef __cplusplus
+#define FPMAP_pMAXFIND 10 // for use in function prototypes
+#else
+#define FPMAP_pMAXFIND static 10
+#endif
+
 // i386 convention: on Windows, stick to fastcall, for compatibility with msvc.
 #if (defined(_WIN32) || defined(__CYGWIN__)) && \
     (defined(_M_IX86) || defined(__i386__))
@@ -130,7 +139,8 @@ struct fpmap {
     } stash;
     // Virtual functions, depend on the bucket size, switched on resize.
     // Pass fp arg first, eax:edx may hold hash() return value.
-    size_t (FPMAP_FASTCALL *find)(FPMAP_pFP64, const struct fpmap *set, struct fpmap_bent *match[10]);
+    size_t (FPMAP_FASTCALL *find)(FPMAP_pFP64, const struct fpmap *set,
+	    struct fpmap_bent *match[FPMAP_pMAXFIND]);
     struct fpmap_bent *(FPMAP_FASTCALL *insert)(FPMAP_pFP64, struct fpmap *map);
     // The buckets (malloc'd); each bucket has bsize entries.
     // Two-dimensional structure is emulated with pointer arithmetic.
@@ -149,8 +159,9 @@ struct fpmap {
 };
 
 // Obtain the set of entries matching the fingerprint.
-// Returns the number of matches found (at most 10, typically 0 or 1).
-static inline size_t fpmap_find(struct fpmap *map, uint64_t fp, struct fpmap_bent *match[10])
+// Returns the number of matches found (up to FPMAP_MAXFIND, typically 0 or 1).
+static inline size_t fpmap_find(const struct fpmap *map, uint64_t fp,
+	struct fpmap_bent *match[FPMAP_pMAXFIND])
 {
     return map->find(FPMAP_aFP64(fp), map, match);
 }
