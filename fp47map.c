@@ -19,6 +19,8 @@
 // SOFTWARE.
 
 #include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
 
 // The implementation does not depend on the caller's struct fpmap_bent
 // exact definition, only on its size.
@@ -205,6 +207,57 @@ static inline bool kick(struct fpmap_bent be, struct fpmap_bent *bb, struct fpma
     return false;
 }
 
+// TODO: aligned moves
+#define A16(p) (p)
+
+#define COPY2(dst, src) memcpy(dst, src, 2 * FPMAP_BENT_SIZE)
+#define BE0 (struct fpmap_bent){ .fptag = 0 }
+
+static inline struct fpmap_bent *resize23(struct fpmap_bent *bb, size_t nb)
+{
+    bb = realloc(bb, 3 * nb * sizeof BE0);
+    if (!bb)
+	return NULL;
+
+    // Reinterpret as a 3-tier array.
+    //
+    //             2 3 . .   . . . .
+    //   1 2 3 4   1 3 4 .   1 2 3 4
+    //   1 2 3 4   1 2 4 .   1 2 3 4
+
+    for (size_t i = nb - 2; i; i -= 2) {
+	struct fpmap_bent *src0 = bb + 2 * i, *src1 = src0 + 2;
+	struct fpmap_bent *dst0 = bb + 3 * i, *dst1 = dst0 + 3;
+	COPY2(    dst1 , A16(src1)); dst1[2] = BE0;
+	COPY2(A16(dst0), A16(src0)); dst0[2] = BE0;
+    }
+    bb[5] = BE0, bb[4] = bb[3], bb[3] = bb[2], bb[2] = BE0;
+    return bb;
+}
+
+static inline struct fpmap_bent *resize34(struct fpmap_bent *bb, size_t nb)
+{
+    bb = realloc(bb, 4 * nb * sizeof BE0);
+    if (!bb)
+	return NULL;
+
+    // Reinterpret as a 4-tier array.
+    //
+    //             2 3 4 .   . . . .
+    //   1 2 3 4   1 3 4 .   1 2 3 4
+    //   1 2 3 4   1 2 4 .   1 2 3 4
+    //   1 2 3 4   1 2 3 .   1 2 3 4
+
+    for (size_t i = nb - 2; i; i -= 2) {
+	struct fpmap_bent *src0 = bb + 3 * i, *src1 = src0 + 3;
+	struct fpmap_bent *dst0 = bb + 4 * i, *dst1 = dst0 + 4;
+	dst1[2] = src1[2]; COPY2(A16(dst1),     src1 ); dst1[3] = BE0;
+	dst0[2] = src0[2]; COPY2(A16(dst0), A16(src0)); dst0[3] = BE0;
+    }
+    bb[7] = BE0, bb[6] = bb[5], bb[5] = bb[4], bb[4] = bb[3], bb[3] = BE0;
+    return bb;
+}
+
 // Template for map->insert virtual functions.
 static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
 	int bsize, bool resized, int nstash)
@@ -232,7 +285,6 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
 MakeAllVFuncs
 
 #include <assert.h>
-#include <stdlib.h>
 #include <errno.h>
 
 struct fpmap *fpmap_new(int logsize)
