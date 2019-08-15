@@ -75,45 +75,73 @@ struct fpmap_bent {
 #define mod32(fp) (1 + (fp) % UINT32_MAX)
 #define Golden32 UINT32_C(2654435761)
 
-#if FPMAP_FPTAG_BITS == 16
-#define dI1T					\
-    uint32_t i1 = fp >> 32;			\
-    uint32_t fptag = mod16(fp);			\
-    uint32_t xorme = fptag * Golden32
-#else
-#define dI1T					\
-    uint32_t i1 = fp;				\
-    uint32_t fptag = mod32(fp);			\
-    uint32_t xorme = fptag
-#endif
-
-// Declare the variables which map the fingerprint to indexes and buckets.
+// Fingerprint to indices.
 // Note that the two buckets are completely symmetrical with regard to xor,
 // i.e. the information about "the first and true" index is not preserved.
 // This looses about 1 bit out of 32+logsize bits of hashing material.
-#define dFP2IB					\
-    dI1T;					\
+#if FPMAP_FPTAG_BITS == 16
+#define dFP2I					\
+    uint32_t i1 = fp >> 32;			\
+    uint32_t fptag = mod16(fp);			\
+    uint32_t xorme = fptag * Golden32;		\
     uint32_t i2 = i1 ^ xorme;			\
     i1 &= map->mask0;				\
-    i2 &= map->mask0;				\
-    /* Indexes need extra high bits? */		\
-    if (resized) {				\
-	Sort2(i1, i2);				\
-	i1 |= fptag << map->logsize0;		\
-	i2 = i1 ^ xorme;			\
-	i1 &= map->mask1;			\
-	i2 &= map->mask1;			\
-    }						\
-    struct fpmap_bent *b1, *b2;			\
-    b1 = map->bb + i1 * bsize;			\
-    b2 = map->bb + i2 * bsize
+    i2 &= map->mask0
+#else
+#define dFP2I					\
+    uint32_t i1 = fp;				\
+    uint32_t fptag = mod32(fp);			\
+    uint32_t xorme = fptag;			\
+    uint32_t i2 = i1 ^ xorme;			\
+    i1 &= map->mask0;				\
+    i2 &= map->mask0
+#endif
+
+#if FPMAP_REG64
+#define uintREG_t uint64_t
+#else
+#define uintREG_t uint32_t
+#endif
 
 // Template for map->find virtual functions.
-static inline size_t t_find(const struct fpmap *map, uint64_t fp, struct fpmap_bent *match[10],
-	int bsize, bool resized, int nstash)
+static inline size_t t_find(const struct fpmap *map, uint64_t fp,
+	struct fpmap_bent *match[FPMAP_pMAXFIND],
+	int bsize, bool resized, int nstash, bool faststash)
 {
-    dFP2IB;
+    dFP2I;
+    if (resized || nstash)
+	Sort2(i1, i2);
+
+    // How the stash is to be checked.
+    uintREG_t stlo;
+    assert(nstash >= faststash);
+    // If we are resized, then the calculation of stlo is the same as adding
+    // extra fptag high bits to i1, so we get stlo for free.
+    if (resized && faststash) {
+	stlo = i1 | (uintREG_t) fptag << map->logsize0;
+	i1 = stlo;
+	i2 = i1 ^ xorme;
+	i1 &= map->mask1;
+	i2 &= map->mask1;
+    }
+    else if (resized) {
+	// No need for stlo, will check i1+fptag.
+	i1 |= fptag << map->logsize0;
+	i2 = i1 ^ xorme;
+	i1 &= map->mask1;
+	i2 &= map->mask1;
+    }
+    else if (faststash) {
+	// On 64-bit platforms, there are enough bits to combine i1+fptag
+	// and even avoid referencing map->logsize0.  On 32-bit platforms,
+	// we only use faststash with 16-bit fptag and logsize0 <= 16.
+	stlo = i1 | (uintREG_t) fptag << sizeof(uintREG_t) * 4;
+	// Not resized, no extra bits for i1 and i2.
+    }
+
     size_t n = 0;
+    struct fpmap_bent *b1 = map->bb + i1 * bsize;
+    struct fpmap_bent *b2 = map->bb + i2 * bsize;
 
     // Branches are predictable, no need for cmov.
 #if 1
@@ -130,12 +158,25 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp, struct fpmap_b
     } while (0)
 #endif
 
+    // This can hopefully issue two memory loads in parallel.
     if (bsize > 0) AddMatch(fptag, b1[0].fptag, &b1[0]);
     if (bsize > 0) AddMatch(fptag, b2[0].fptag, &b2[0]);
 
-    struct fpmap_bent *st = (void *) map->stash.be; // const cast
-    if (nstash > 0) AddMatch(fptag, st[0].fptag, &st[0]);
-    if (nstash > 1) AddMatch(fptag, st[1].fptag, &st[1]);
+    struct fpmap_stash *st = (void *) &map->stash; // const cast
+#define AddStash(j)			\
+    do {				\
+	if (st->be[j].fptag == fptag && st->lo[j] == i1) \
+	    match[n++] = &st->be[j];	\
+    } while (0)
+
+    if (faststash) {
+	if (nstash > 0) AddMatch(stlo, st->lo[0], &st->be[0]);
+	if (nstash > 1) AddMatch(stlo, st->lo[1], &st->be[1]);
+    }
+    else if (nstash) {
+	if (nstash > 0) AddStash(0);
+	if (nstash > 1) AddStash(1);
+    }
 
     if (bsize > 1) AddMatch(fptag, b1[1].fptag, &b1[1]);
     if (bsize > 1) AddMatch(fptag, b2[1].fptag, &b2[1]);
@@ -148,17 +189,47 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp, struct fpmap_b
 }
 
 // Virtual functions for map->find.
-#define MakeVFuncs(BS, RE, ST) \
-    static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st##ST) \
-	(FPMAP_pFP64, const struct fpmap *map, struct fpmap_bent *match[10]) \
-    { return t_find(map, fp, match, BS, RE, ST); }
-#define MakeAllVFuncs	\
-    MakeVFuncs(2, 0, 0) MakeVFuncs(2, 0, 1) MakeVFuncs(2, 0, 2) \
-    MakeVFuncs(3, 0, 0) MakeVFuncs(3, 0, 1) MakeVFuncs(3, 0, 2) \
-    MakeVFuncs(4, 0, 0) MakeVFuncs(4, 0, 1) MakeVFuncs(4, 0, 2) \
-    MakeVFuncs(3, 1, 0) MakeVFuncs(3, 1, 1) MakeVFuncs(3, 1, 2) \
-    MakeVFuncs(4, 1, 0) MakeVFuncs(4, 1, 1) MakeVFuncs(4, 1, 2)
-MakeAllVFuncs
+#define MakeFindVFunc1_st0(BS, RE) \
+    static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st0) \
+	(FPMAP_pFP64, const struct fpmap *map, \
+	 struct fpmap_bent *match[FPMAP_pMAXFIND]) \
+    { return t_find(map, fp, match, BS, RE, 0, 0); }
+#define MakeFindVFunc1_st1(BS, RE, ST, FA) \
+    static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st##ST##fa##FA) \
+	(FPMAP_pFP64, const struct fpmap *map, \
+	 struct fpmap_bent *match[FPMAP_pMAXFIND]) \
+    { return t_find(map, fp, match, BS, RE, ST, FA); }
+
+// On 64-bit platforms, the check for index+fptag is always fused
+// (the faststash mode is always on).
+#ifdef FPMAP_REG64
+#define MakeFindVFuncs(BS, RE) \
+    MakeFindVFunc1_st0(BS, RE) \
+    MakeFindVFunc1_st1(BS, RE, 1, 1) \
+    MakeFindVFunc1_st1(BS, RE, 2, 1)
+// On 32-bit platforms with 32-bit fptag, the fassthash mode is always off.
+#elif FPMAP_BENT_SIZE == 32
+#define MakeFindVFuncs(BS, RE) \
+    MakeFindVFunc1_st0(BS, RE) \
+    MakeFindVFunc1_st1(BS, RE, 1, 0) \
+    MakeFindVFunc1_st1(BS, RE, 2, 0)
+// Otherwise, there will be a runtime check.
+#else
+#define MakeFindVFuncs(BS, RE) \
+    MakeFindVFunc1_st0(BS, RE) \
+    MakeFindVFunc1_st1(BS, RE, 1, 0) \
+    MakeFindVFunc1_st1(BS, RE, 2, 0) \
+    MakeFindVFunc1_st1(BS, RE, 1, 1) \
+    MakeFindVFunc1_st1(BS, RE, 2, 1)
+#endif
+
+// There are no resized function for bsize == 2, becuase we first go 2->3->4,
+// then double the number of buckets and go 3->4 again.
+#define MakeAllFindVFuncs \
+    MakeFindVFuncs(2, 0) \
+    MakeFindVFuncs(3, 0) MakeFindVFuncs(4, 0) \
+    MakeFindVFuncs(3, 1) MakeFindVFuncs(4, 1)
+MakeAllFindVFuncs
 
 static inline struct fpmap_bent *insert(struct fpmap_bent *b1, struct fpmap_bent *b2,
 	int bsize)
@@ -261,7 +332,7 @@ static inline struct fpmap_bent *resize34(struct fpmap_bent *bb, size_t nb)
 }
 
 static inline void stash1(struct fpmap *map, struct fpmap_bent be,
-	uint32_t i1, bool resized, int nstash)
+	uint32_t i1, bool resized)
 {
     uint32_t xorme = be.fptag;
 #if FPMAP_FPTAG_BITS == 16
@@ -272,17 +343,34 @@ static inline void stash1(struct fpmap *map, struct fpmap_bent be,
 	i1 &= map->mask0;
     i2 &= map->mask0;
     i1 = (i2 < i1) ? i2 : i1;
-    assert(map->nstash == nstash);
-    map->stash.be[nstash] = be;
-    map->stash.lo[nstash] = i1;
-    map->nstash = nstash + 1;
+    uintREG_t *lo = &map->stash.lo[map->nstash];
+    map->stash.be[map->nstash++] = be;
+    // How the stash is to be checked, must match to what t_find does.
+    bool faststash = FPMAP_REG64 || (FPMAP_FPTAG_BITS == 16 && map->logsize0 <= 16);
+    if (resized && faststash)
+	*lo = i1 | (uintREG_t) be.fptag << map->logsize0;
+    else if (resized)
+	*lo = i1;
+    else if (faststash)
+	*lo = i1 | (uintREG_t) be.fptag << sizeof(uintREG_t) * 4;
+    else
+	*lo = i1;
 }
 
 // Template for map->insert virtual functions.
 static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
-	int bsize, bool resized, int nstash)
+	int bsize, bool resized)
 {
-    dFP2IB;
+    dFP2I;
+    if (resized) {
+	Sort2(i1, i2);
+	i1 |= fptag << map->logsize0;
+	i2 = i1 ^ xorme;
+	i1 &= map->mask1;
+	i2 &= map->mask1;
+    }
+    struct fpmap_bent *b1 = map->bb + i1 * bsize;
+    struct fpmap_bent *b2 = map->bb + i2 * bsize;
     // Strategically bump set->cnt.
     map->cnt++;
     struct fpmap_bent *be = insert(b1, b2, bsize);
@@ -295,21 +383,24 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
     uint32_t mask = resized ? map->mask1 : map->mask0;
     if (kickloop(map->bb, kbe, b1, i1, &kbe, &i1, logsize, mask, bsize))
 	return &b1[bsize-1];
-    if (nstash < 2) {
+    if (map->nstash < 2) {
 	map->cnt--;
-	stash1(map, kbe, i1, resized, nstash);
+	stash1(map, kbe, i1, resized);
 	// TODO: SelectVFuncs
     }
     return NULL;
 }
 
 // Virtual functions for map->insert.
-#undef MakeVFuncs
-#define MakeVFuncs(BS, RE, ST) \
-    static FPMAP_FASTCALL struct fpmap_bent *FPMAP_NAME(insert##BS##re##RE##st##ST) \
+#define MakeInsertVFunc(BS, RE) \
+    static FPMAP_FASTCALL struct fpmap_bent *FPMAP_NAME(insert##BS##re##RE) \
 	(FPMAP_pFP64, struct fpmap *map) \
-    { return t_insert(map, fp, BS, RE, ST); }
-MakeAllVFuncs
+    { return t_insert(map, fp, BS, RE); }
+#define MakeAllInsertVFuncs \
+    MakeInsertVFunc(2, 0) \
+    MakeInsertVFunc(3, 0) MakeInsertVFunc(4, 0) \
+    MakeInsertVFunc(3, 1) MakeInsertVFunc(4, 1)
+MakeAllInsertVFuncs
 
 #include <assert.h>
 #include <errno.h>
@@ -333,7 +424,7 @@ struct fpmap *fpmap_new(int logsize)
 	return free(bb), NULL;
 
     map->find = FPMAP_NAME(find2re0st0);
-    map->insert = FPMAP_NAME(insert2re0st0);
+    map->insert = FPMAP_NAME(insert2re0);
     map->bsize = 2;
     map->nstash = 0;
     map->logsize0 = map->logsize1 = logsize;

@@ -129,14 +129,31 @@ void fpmap_free(struct fpmap *map);
 #define FPMAP_aFP64(fp) fp
 #endif
 
+// Check if CPU registers are 64-bit.
+#if (SIZE_MAX > UINT32_MAX) || defined(__x86_64__)
+#define FPMAP_REG64 1
+#else
+#define FPMAP_REG64 0
+#endif
+
+// To reduce the failure rate, one or two bucket entries can be stashed.
+struct fpmap_stash {
+    struct fpmap_bent be[2];
+    // Since bucket entries are looked up by index+fptag, we also need to
+    // remember the index (there are actually two symmetrical indices and
+    // we store the smaller one).  Furthermore, on 64-bit platforms we can
+    // check index+fptag as a single var.
+#if FPMAP_REG64
+    uint64_t lo[2];
+#else
+    uint32_t lo[2];
+#endif
+};
+
 // Expose the structure, to inline vfunc calls.
 struct fpmap {
-    // To reduce the failure rate, one or two entries can be stashed.
     // This guy goes first and gets the best alignment (the same as buckets).
-    struct fpmap_stash {
-	struct fpmap_bent be[2];
-	uint32_t lo[2];
-    } stash;
+    struct fpmap_stash stash;
     // Virtual functions, depend on the bucket size, switched on resize.
     // Pass fp arg first, eax:edx may hold hash() return value.
     size_t (FPMAP_FASTCALL *find)(FPMAP_pFP64, const struct fpmap *set,
