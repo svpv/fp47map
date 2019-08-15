@@ -134,7 +134,7 @@ struct fpmap {
     // To reduce the failure rate, one or two entries can be stashed.
     // This guy goes first and gets the best alignment (the same as buckets).
     struct fpmap_stash {
-	struct fpmap_bent bent[2];
+	struct fpmap_bent be[2];
 	uint32_t lo[2];
     } stash;
     // Virtual functions, depend on the bucket size, switched on resize.

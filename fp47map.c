@@ -133,7 +133,7 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp, struct fpmap_b
     if (bsize > 0) AddMatch(fptag, b1[0].fptag, &b1[0]);
     if (bsize > 0) AddMatch(fptag, b2[0].fptag, &b2[0]);
 
-    struct fpmap_bent *st = (void *) map->stash.bent; // const cast
+    struct fpmap_bent *st = (void *) map->stash.be; // const cast
     if (nstash > 0) AddMatch(fptag, st[0].fptag, &st[0]);
     if (nstash > 1) AddMatch(fptag, st[1].fptag, &st[1]);
 
@@ -174,8 +174,10 @@ static inline struct fpmap_bent *insert(struct fpmap_bent *b1, struct fpmap_bent
     return NULL;
 }
 
-static inline bool kick(struct fpmap_bent be, struct fpmap_bent *bb, struct fpmap_bent *b,
-	size_t i, struct fpmap_bent *obe, uint32_t *oi, int logsize, uint32_t mask, int bsize)
+static inline bool kickloop(struct fpmap_bent *bb,
+	struct fpmap_bent be, struct fpmap_bent *b, uint32_t i,
+	struct fpmap_bent *obe, uint32_t *oi,
+	int logsize, uint32_t mask, int bsize)
 {
     int maxkick = 2 * logsize;
     do {
@@ -258,21 +260,46 @@ static inline struct fpmap_bent *resize34(struct fpmap_bent *bb, size_t nb)
     return bb;
 }
 
+static inline void stash1(struct fpmap *map, struct fpmap_bent be,
+	uint32_t i1, bool resized, int nstash)
+{
+    uint32_t xorme = be.fptag;
+#if FPMAP_FPTAG_BITS == 16
+    xorme *= Golden32;
+#endif
+    uint32_t i2 = i1 ^ xorme;
+    if (resized)
+	i1 &= map->mask0;
+    i2 &= map->mask0;
+    i1 = (i2 < i1) ? i2 : i1;
+    assert(map->nstash == nstash);
+    map->stash.be[nstash] = be;
+    map->stash.lo[nstash] = i1;
+    map->nstash = nstash + 1;
+}
+
 // Template for map->insert virtual functions.
 static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
 	int bsize, bool resized, int nstash)
 {
     dFP2IB;
+    // Strategically bump set->cnt.
+    map->cnt++;
     struct fpmap_bent *be = insert(b1, b2, bsize);
     if (be) {
 	be->fptag = fptag;
-	return map->cnt++, be;
+	return be;
     }
     struct fpmap_bent kbe = { .fptag = fptag };
     int logsize = resized ? map->logsize1 : map->logsize0;
     uint32_t mask = resized ? map->mask1 : map->mask0;
-    if (kick(kbe, map->bb, b1, i1, &kbe, &i1, logsize, mask, bsize))
-	return map->cnt++, &b1[bsize-1];
+    if (kickloop(map->bb, kbe, b1, i1, &kbe, &i1, logsize, mask, bsize))
+	return &b1[bsize-1];
+    if (nstash < 2) {
+	map->cnt--;
+	stash1(map, kbe, i1, resized, nstash);
+	// TODO: SelectVFuncs
+    }
     return NULL;
 }
 
