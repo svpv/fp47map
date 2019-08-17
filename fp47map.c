@@ -279,6 +279,30 @@ static inline bool kickloop(struct fpmap_bent *bb,
     return false;
 }
 
+// When kickloop fails, we may need to revert the buckets to the original
+// state.  So we just insert the kicked-out entry in the reverse direction.
+static inline uint32_t kickback(struct fpmap_bent *bb,
+	struct fpmap_bent be, struct fpmap_bent *b, uint32_t i,
+	int logsize, uint32_t mask, int bsize)
+{
+    int maxkick = 2 * logsize;
+    do {
+	struct fpmap_bent obe = b[bsize-1];
+	if (bsize > 3) b[3] = b[2];
+	if (bsize > 2) b[2] = b[1];
+	if (bsize > 1) b[1] = b[0];
+	b[0] = be;
+	uint32_t xorme = obe.fptag;
+	if (FPMAP_FPTAG_BITS == 16)
+	    xorme *= Golden32;
+	i ^= xorme;
+	i &= mask;
+	b = bb + bsize * i;
+	be = obe;
+    } while (--maxkick >= 0);
+    return be.fptag;
+}
+
 // TODO: aligned moves
 #define A16(p) (p)
 
@@ -418,14 +442,16 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
     }
     // The 4->3 scenario is the "true resize", quite complex.
     if (bsize == 4) {
-	kickback(map->bb, kbe, b2, i2, logsize, mask, bsize);
+	uint32_t fpout = kickback(map->bb, kbe, b2, i2, logsize, mask, bsize);
+	assert(fpout == fptag);
 	return insert4tail(map, fp);
     }
     // With 2->3 and 3->4 though, we just extend the buckets.
     uint32_t nb = mask + 1;
     struct fpmap_bent *bb = realloc(map->bb, (bsize + 1) * nb * sizeof BE0);
     if (!bb) {
-	kickback(map->bb, kbe, b2, i2, logsize, mask, bsize);
+	uint32_t fpout = kickback(map->bb, kbe, b2, i2, logsize, mask, bsize);
+	assert(fpout == fptag);
 	map->cnt--;
 	return NULL;
     }
