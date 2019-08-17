@@ -188,48 +188,94 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp,
     return n;
 }
 
-// Virtual functions for map->find.
+// Virtual functions, prototypes for now.
 #define MakeFindVFunc1_st0(BS, RE) \
     static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st0) \
 	(FPMAP_pFP64, const struct fpmap *map, \
-	 struct fpmap_bent *match[FPMAP_pMAXFIND]) \
-    { return t_find(map, fp, match, BS, RE, 0, 0); }
+	 struct fpmap_bent *match[FPMAP_pMAXFIND]);
 #define MakeFindVFunc1_st1(BS, RE, ST, FA) \
     static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st##ST##fa##FA) \
 	(FPMAP_pFP64, const struct fpmap *map, \
-	 struct fpmap_bent *match[FPMAP_pMAXFIND]) \
-    { return t_find(map, fp, match, BS, RE, ST, FA); }
+	 struct fpmap_bent *match[FPMAP_pMAXFIND]);
+#define MakeInsertVFunc1(BS, RE) \
+    static FPMAP_FASTCALL struct fpmap_bent *FPMAP_NAME(insert##BS##re##RE) \
+	(FPMAP_pFP64, struct fpmap *map);
 
 // On 64-bit platforms, the check for index+fptag is always fused
 // (the faststash mode is always on).
-#ifdef FPMAP_REG64
-#define MakeFindVFuncs(BS, RE) \
-    MakeFindVFunc1_st0(BS, RE) \
+#if FPMAP_REG64
+#define MakeFindVFuncs_st1(BS, RE) \
     MakeFindVFunc1_st1(BS, RE, 1, 1) \
     MakeFindVFunc1_st1(BS, RE, 2, 1)
+#define SelectStashVFunc(logsize0, fa0, fa1) fa1
 // On 32-bit platforms with 32-bit fptag, the fassthash mode is always off.
 #elif FPMAP_BENT_SIZE == 32
-#define MakeFindVFuncs(BS, RE) \
-    MakeFindVFunc1_st0(BS, RE) \
+#define MakeFindVFuncs_st1(BS, RE) \
     MakeFindVFunc1_st1(BS, RE, 1, 0) \
     MakeFindVFunc1_st1(BS, RE, 2, 0)
+#define SelectStashVFunc(logsize0, fa0, fa1) fa0
 // Otherwise, there will be a runtime check.
 #else
-#define MakeFindVFuncs(BS, RE) \
-    MakeFindVFunc1_st0(BS, RE) \
+#define MakeFindVFuncs_st1(BS, RE) \
     MakeFindVFunc1_st1(BS, RE, 1, 0) \
     MakeFindVFunc1_st1(BS, RE, 2, 0) \
     MakeFindVFunc1_st1(BS, RE, 1, 1) \
     MakeFindVFunc1_st1(BS, RE, 2, 1)
+#define SelectStashVFunc(logsize0, fa0, fa1) (logsize0 <= 16 ? fa1 : fa0)
 #endif
+
+// For the same bucket size, find and insert are placed back to back in memory.
+// This should spare us some L1i cache misses.
+#define MakeVFuncs(BS, RE) \
+    MakeFindVFunc1_st0(BS, RE) \
+    MakeInsertVFunc1(BS, RE) \
+    MakeFindVFuncs_st1(BS, RE)
 
 // There are no resized function for bsize == 2, becuase we first go 2->3->4,
 // then double the number of buckets and go 3->4 again.
-#define MakeAllFindVFuncs \
-    MakeFindVFuncs(2, 0) \
-    MakeFindVFuncs(3, 0) MakeFindVFuncs(4, 0) \
-    MakeFindVFuncs(3, 1) MakeFindVFuncs(4, 1)
-MakeAllFindVFuncs
+#define MakeAllVFuncs \
+    MakeVFuncs(2, 0) \
+    MakeVFuncs(3, 0) MakeVFuncs(4, 0) \
+    MakeVFuncs(3, 1) MakeVFuncs(4, 1)
+MakeAllVFuncs
+
+// When BS and RE are literals.
+#define setVFuncsBR(map, BS, RE, nstash, logsize0)	\
+do {							\
+    map->insert = FPMAP_NAME(insert##BS##re##RE);	\
+    if (nstash == 0)					\
+	map->find = FPMAP_NAME(find##BS##re##RE##st0);	\
+    else if (nstash == 1)				\
+	map->find = SelectStashVFunc(logsize0,		\
+	    FPMAP_NAME(find##BS##re##RE##st1fa0),	\
+	    FPMAP_NAME(find##BS##re##RE##st1fa1));	\
+    else						\
+	map->find = SelectStashVFunc(logsize0,		\
+	    FPMAP_NAME(find##BS##re##RE##st2fa0),	\
+	    FPMAP_NAME(find##BS##re##RE##st2fa1));	\
+} while (0)
+
+static inline void setVFuncs(struct fpmap *map, int bsize, bool resized, int nstash)
+{
+    if (bsize == 2) {
+	if (resized)
+	    assert(0);
+	else
+	    setVFuncsBR(map, 2, 0, nstash, map->logsize0);
+    }
+    else if (bsize == 3) {
+	if (resized)
+	    setVFuncsBR(map, 3, 1, nstash, map->logsize0);
+	else
+	    setVFuncsBR(map, 3, 0, nstash, map->logsize0);
+    }
+    else {
+	if (resized)
+	    setVFuncsBR(map, 4, 1, nstash, map->logsize0);
+	else
+	    setVFuncsBR(map, 4, 0, nstash, map->logsize0);
+    }
+}
 
 static inline struct fpmap_bent *empty2(struct fpmap_bent *b1, struct fpmap_bent *b2,
 	int bsize)
@@ -471,16 +517,25 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
     return &b1[bsize-1];
 }
 
-// Virtual functions for map->insert.
-#define MakeInsertVFunc(BS, RE) \
+// Finally instatntiate virtual functions.
+#undef MakeFindVFunc1_st0
+#define MakeFindVFunc1_st0(BS, RE) \
+    static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st0) \
+	(FPMAP_pFP64, const struct fpmap *map, \
+	 struct fpmap_bent *match[FPMAP_pMAXFIND]) \
+    { return t_find(map, fp, match, BS, RE, 0, 0); }
+#undef MakeFindVFunc1_st1
+#define MakeFindVFunc1_st1(BS, RE, ST, FA) \
+    static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st##ST##fa##FA) \
+	(FPMAP_pFP64, const struct fpmap *map, \
+	 struct fpmap_bent *match[FPMAP_pMAXFIND]) \
+    { return t_find(map, fp, match, BS, RE, ST, FA); }
+#undef MakeInsertVFunc1
+#define MakeInsertVFunc1(BS, RE) \
     static FPMAP_FASTCALL struct fpmap_bent *FPMAP_NAME(insert##BS##re##RE) \
 	(FPMAP_pFP64, struct fpmap *map) \
     { return t_insert(map, fp, BS, RE); }
-#define MakeAllInsertVFuncs \
-    MakeInsertVFunc(2, 0) \
-    MakeInsertVFunc(3, 0) MakeInsertVFunc(4, 0) \
-    MakeInsertVFunc(3, 1) MakeInsertVFunc(4, 1)
-MakeAllInsertVFuncs
+MakeAllVFuncs
 
 #include <assert.h>
 #include <errno.h>
