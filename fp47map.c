@@ -231,7 +231,7 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp,
     MakeFindVFuncs(3, 1) MakeFindVFuncs(4, 1)
 MakeAllFindVFuncs
 
-static inline struct fpmap_bent *insert(struct fpmap_bent *b1, struct fpmap_bent *b2,
+static inline struct fpmap_bent *empty2(struct fpmap_bent *b1, struct fpmap_bent *b2,
 	int bsize)
 {
     if (bsize > 0 && b1[0].fptag == 0) return &b1[0];
@@ -247,7 +247,7 @@ static inline struct fpmap_bent *insert(struct fpmap_bent *b1, struct fpmap_bent
 
 static inline bool kickloop(struct fpmap_bent *bb,
 	struct fpmap_bent be, struct fpmap_bent *b, uint32_t i,
-	struct fpmap_bent *obe, uint32_t *oi,
+	struct fpmap_bent *obe, struct fpmap_bent **ob, uint32_t *oi,
 	int logsize, uint32_t mask, int bsize)
 {
     int maxkick = 2 * logsize;
@@ -262,9 +262,8 @@ static inline bool kickloop(struct fpmap_bent *bb,
 	// Ponder over the entry that's been kicked out.
 	// Find out the alternative bucket.
 	uint32_t xorme = obe->fptag;
-#if FPMAP_FPTAG_BITS == 16
-	xorme *= Golden32;
-#endif
+	if (FPMAP_FPTAG_BITS == 16)
+	    xorme *= Golden32;
 	i ^= xorme;
 	i &= mask;
 	b = bb + bsize * i;
@@ -276,7 +275,7 @@ static inline bool kickloop(struct fpmap_bent *bb,
 	be = *obe;
     } while (--maxkick >= 0);
     // Ran out of tries? obe already set.
-    *oi = i;
+    *ob = b, *oi = i;
     return false;
 }
 
@@ -286,12 +285,8 @@ static inline bool kickloop(struct fpmap_bent *bb,
 #define COPY2(dst, src) memcpy(dst, src, 2 * FPMAP_BENT_SIZE)
 #define BE0 (struct fpmap_bent){ .fptag = 0 }
 
-static inline struct fpmap_bent *resize23(struct fpmap_bent *bb, size_t nb)
+static inline void reinterp23(struct fpmap_bent *bb, size_t nb)
 {
-    bb = realloc(bb, 3 * nb * sizeof BE0);
-    if (!bb)
-	return NULL;
-
     // Reinterpret as a 3-tier array.
     //
     //             2 3 . .   . . . .
@@ -305,15 +300,10 @@ static inline struct fpmap_bent *resize23(struct fpmap_bent *bb, size_t nb)
 	COPY2(A16(dst0), A16(src0)); dst0[2] = BE0;
     }
     bb[5] = BE0, bb[4] = bb[3], bb[3] = bb[2], bb[2] = BE0;
-    return bb;
 }
 
-static inline struct fpmap_bent *resize34(struct fpmap_bent *bb, size_t nb)
+static inline void reinterp34(struct fpmap_bent *bb, size_t nb)
 {
-    bb = realloc(bb, 4 * nb * sizeof BE0);
-    if (!bb)
-	return NULL;
-
     // Reinterpret as a 4-tier array.
     //
     //             2 3 4 .   . . . .
@@ -328,33 +318,69 @@ static inline struct fpmap_bent *resize34(struct fpmap_bent *bb, size_t nb)
 	dst0[2] = src0[2]; COPY2(A16(dst0), A16(src0)); dst0[3] = BE0;
     }
     bb[7] = BE0, bb[6] = bb[5], bb[5] = bb[4], bb[4] = bb[3], bb[3] = BE0;
-    return bb;
 }
 
-static inline void stash1(struct fpmap *map, struct fpmap_bent be,
+// When an entry is about to enter the stash, we need to calculate stash.lo
+// based the entry's index.  This must match to what t_find does.
+static inline uintREG_t stash1lo(struct fpmap *map, struct fpmap_bent *be,
 	uint32_t i1, bool resized)
 {
-    uint32_t xorme = be.fptag;
-#if FPMAP_FPTAG_BITS == 16
-    xorme *= Golden32;
-#endif
+    uint32_t fptag = be->fptag;
+    uint32_t xorme = fptag;
+    if (FPMAP_FPTAG_BITS == 16)
+	xorme *= Golden32;
     uint32_t i2 = i1 ^ xorme;
     if (resized)
 	i1 &= map->mask0;
     i2 &= map->mask0;
     i1 = (i2 < i1) ? i2 : i1;
-    uintREG_t *lo = &map->stash.lo[map->nstash];
-    map->stash.be[map->nstash++] = be;
-    // How the stash is to be checked, must match to what t_find does.
     bool faststash = FPMAP_REG64 || (FPMAP_FPTAG_BITS == 16 && map->logsize0 <= 16);
     if (resized && faststash)
-	*lo = i1 | (uintREG_t) be.fptag << map->logsize0;
-    else if (resized)
-	*lo = i1;
-    else if (faststash)
-	*lo = i1 | (uintREG_t) be.fptag << sizeof(uintREG_t) * 4;
-    else
-	*lo = i1;
+	return i1 | (uintREG_t) fptag << map->logsize0;
+    if (resized)
+	return i1;
+    if (faststash)
+	return i1 | (uintREG_t) fptag << sizeof(uintREG_t) * 4;
+    return i1;
+}
+
+// After the table gets resized, we try to reinsert the stashed elements.
+static inline unsigned restash2(struct fpmap *map, int bsize, bool resized)
+{
+    unsigned k = 0;
+    struct fpmap_stash *st = &map->stash;
+    for (unsigned j = 0; j < 2; j++) {
+	uint32_t fptag = st->be[j].fptag;
+	uint32_t xorme = fptag;
+	if (FPMAP_FPTAG_BITS == 16)
+	    xorme *= Golden32;
+	uint32_t i1 = st->lo[j];
+	uint32_t i2 = i1 ^ xorme;
+	i1 &= map->mask0;
+	i2 &= map->mask0;
+	// No need to sort, i1 is already "lo".
+	if (resized) {
+	    i1 |= fptag << map->logsize0;
+	    i2 = i1 ^ xorme;
+	    i1 &= map->mask1;
+	    i2 &= map->mask1;
+	}
+	struct fpmap_bent *b1 = map->bb + i1 * bsize;
+	struct fpmap_bent *b2 = map->bb + i2 * bsize;
+	struct fpmap_bent *be = empty2(b1, b2, bsize);
+	if (be) {
+	    *be = st->be[j];
+	    continue;
+	}
+	int logsize = resized ? map->logsize1 : map->logsize0;
+	uint32_t mask = resized ? map->mask1 : map->mask0;
+	if (kickloop(map->bb, st->be[j], b1, i1, &st->be[k], &b2, &i2, logsize, mask, bsize))
+	    continue;
+	// An entry from i2 has landed into st->be[k].
+	st->lo[k] = stash1lo(map, &st->be[k], i2, resized);
+	k++;
+    }
+    return k;
 }
 
 // Template for map->insert virtual functions.
@@ -371,9 +397,8 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
     }
     struct fpmap_bent *b1 = map->bb + i1 * bsize;
     struct fpmap_bent *b2 = map->bb + i2 * bsize;
-    // Strategically bump set->cnt.
-    map->cnt++;
-    struct fpmap_bent *be = insert(b1, b2, bsize);
+    map->cnt++; // strategical bump, may renege
+    struct fpmap_bent *be = empty2(b1, b2, bsize);
     if (be) {
 	be->fptag = fptag;
 	return be;
@@ -381,14 +406,43 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
     struct fpmap_bent kbe = { .fptag = fptag };
     int logsize = resized ? map->logsize1 : map->logsize0;
     uint32_t mask = resized ? map->mask1 : map->mask0;
-    if (kickloop(map->bb, kbe, b1, i1, &kbe, &i1, logsize, mask, bsize))
+    if (kickloop(map->bb, kbe, b1, i1, &kbe, &b2, &i2, logsize, mask, bsize))
 	return &b1[bsize-1];
     if (map->nstash < 2) {
-	map->cnt--;
-	stash1(map, kbe, i1, resized);
-	// TODO: SelectVFuncs
+	struct fpmap_stash *st = &map->stash;
+	st->be[map->nstash] = kbe;
+	st->lo[map->nstash] = stash1lo(map, &st->be[map->nstash], i2, resized);
+	map->nstash++, map->cnt--;
+	setVFuncs(map, bsize, resized, map->nstash);
+	return &b1[bsize-1];
     }
-    return NULL;
+    // The 4->3 scenario is the "true resize", quite complex.
+    if (bsize == 4) {
+	kickback(map->bb, kbe, b2, i2, logsize, mask, bsize);
+	return insert4tail(map, fp);
+    }
+    // With 2->3 and 3->4 though, we just extend the buckets.
+    uint32_t nb = mask + 1;
+    struct fpmap_bent *bb = realloc(map->bb, (bsize + 1) * nb * sizeof BE0);
+    if (!bb) {
+	kickback(map->bb, kbe, b2, i2, logsize, mask, bsize);
+	map->cnt--;
+	return NULL;
+    }
+    if (bsize == 2) reinterp23(bb, nb);
+    if (bsize == 3) reinterp34(bb, nb);
+    map->bb = bb;
+    map->bsize = bsize + 1;
+    b1 = bb + (bsize + 1) * i1;
+    b2 = bb + (bsize + 1) * i2;
+    // Insert kbe at i2, no kicks required.
+    b2[bsize] = kbe;
+    // Reinsert the stashed elements.
+    map->cnt += map->nstash;
+    map->nstash = restash2(map, bsize + 1, resized);
+    map->cnt -= map->nstash;
+    setVFuncs(map, bsize + 1, resized, map->nstash);
+    return &b1[bsize-1];
 }
 
 // Virtual functions for map->insert.
