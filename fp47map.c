@@ -480,6 +480,9 @@ static inline unsigned restash2(struct fpmap *map, int bsize, bool resized)
     return k;
 }
 
+// Sentinels at the end of map->bb, for fpmap_next.
+#define SENTINELS 3
+
 // Template for map->insert virtual functions.
 static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
 	int bsize, bool resized)
@@ -511,14 +514,17 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
 	return insert4tail(map, fp);
     }
     // With 2->3 and 3->4 though, we just extend the buckets.
-    uint32_t nb = mask + 1;
-    struct fpmap_bent *bb = realloc(map->bb, (bsize + 1) * nb * sizeof BE0);
+    size_t nb = mask + (size_t) 1;
+    size_t nbe = (bsize + 1) * nb;
+    struct fpmap_bent *bb = realloc(map->bb, (nbe + SENTINELS) * sizeof BE0);
     if (!bb) {
 	uint32_t fpout = kickback(map->bb, kbe, b2, i2, logsize, mask, bsize);
 	assert(fpout == fptag);
 	map->cnt--;
 	return NULL;
     }
+    for (unsigned i = 0; i < SENTINELS; i++)
+	bb[nbe+i].fptag = 1;
     if (bsize == 2) reinterp23(bb, nb);
     if (bsize == 3) reinterp34(bb, nb);
     map->bb = bb;
@@ -573,13 +579,17 @@ struct fpmap *fpmap_new(int logsize)
 
     // Starting with two slots per bucket.
     size_t nb = (size_t) 1 << logsize;
-    struct fpmap_bent *bb = calloc(nb, 2 * sizeof(struct fpmap_bent));
+    size_t nbe = 2 * nb;
+    struct fpmap_bent *bb = calloc(nbe + SENTINELS, sizeof BE0);
     if (!bb)
 	return NULL;
 
     struct fpmap *map = malloc(sizeof *map);
     if (!map)
 	return free(bb), NULL;
+
+    for (unsigned i = 0; i < SENTINELS; i++)
+	bb[nbe+i].fptag = 1;
 
     map->bsize = 2;
     map->nstash = 0;
@@ -600,7 +610,7 @@ void fpmap_free(struct fpmap *arg)
     // The number of entries must match the occupied slots.
     size_t cnt = 0;
     struct fpmap_bent *bb = map->bb;
-    size_t n = map->bsize * (map->mask1 + 1);
+    size_t n = map->bsize * (map->mask1 + (size_t) 1);
     for (size_t i = 0; i < n; i += 4)
 	cnt += (bb[i+0].fptag > 0)
 	    +  (bb[i+1].fptag > 0)
@@ -610,4 +620,26 @@ void fpmap_free(struct fpmap *arg)
 #endif
     free(map->bb);
     free(map);
+}
+
+struct fpmap_bent *FPMAP_FASTCALL fpmap_next(const struct fpmap *map,
+					     size_t *iter)
+{
+    size_t i = *iter;
+    struct fpmap_bent *bb = map->bb;
+    size_t n = map->bsize * (map->mask1 + (size_t) 1);
+    while (bb[i].fptag == 0)
+	i++;
+    if (i < n)
+	return *iter = i + 1, &bb[i];
+    struct fpmap_stash *st = (void *) &map->stash; // const cast
+    if (map->nstash == 0)
+	return *iter = 0, NULL;
+    if (i == n)
+	return *iter = n + 1, &st->be[0];
+    if (map->nstash == 1)
+	return *iter = 0, NULL;
+    if (i == n + 1)
+	return *iter = n + 2, &st->be[1];
+    return *iter = 0, NULL;
 }

@@ -82,6 +82,7 @@ static_assert(offsetof(struct fpmap_bent, fptag) == FPMAP_BENT_SIZE - FPMAP_FPTA
 
 #define fpmap_new FPMAP_NAME(new)
 #define fpmap_free FPMAP_NAME(free)
+#define fpmap_next FPMAP_NAME(next)
 
 // Create a map.  The logsize parameter specifies the expected number of
 // entries in the map (e.g. logsize = 10 for 1024).  There is a fairly small
@@ -195,6 +196,13 @@ static inline void fpmap_prefetch(const struct fpmap *map, uint64_t fp)
 {
     map->prefetch(FPMAP_aFP64(fp), map);
 }
+
+// Iterate bucket entries.  iter must be initially set to zero;
+// it stores the position of "where we left off".  On each call, a pointer
+// to an entry is returned and the position is advanced.  After all the
+// entries are traversed, returns NULL and resets iter to zero.
+struct fpmap_bent *FPMAP_FASTCALL fpmap_next(const struct fpmap *map,
+					     size_t *iter);
 
 #ifdef __GNUC__
 #pragma GCC visibility pop
