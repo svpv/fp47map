@@ -97,6 +97,20 @@ struct fpmap_bent {
     i2 &= map->mask0
 #endif
 
+// Fingerprint to indices and buckets.
+#define dFP2IB					\
+    dFP2I;					\
+    if (resized) {				\
+	Sort2(i1, i2);				\
+	i1 |= fptag << map->logsize0;		\
+	i2 = i1 ^ xorme;			\
+	i1 &= map->mask1;			\
+	i2 &= map->mask1;			\
+    }						\
+    struct fpmap_bent *b1, *b2;			\
+    b1 = map->bb + i1 * bsize;			\
+    b2 = map->bb + i2 * bsize
+
 #if FPMAP_REG64
 #define uintREG_t uint64_t
 #else
@@ -188,6 +202,14 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp,
     return n;
 }
 
+static inline void t_prefetch(const struct fpmap *map, uint64_t fp,
+      int bsize, int resized)
+{
+    dFP2IB;
+    __builtin_prefetch(&b1[0].fptag);
+    __builtin_prefetch(&b2[0].fptag);
+}
+
 // Virtual functions, prototypes for now.
 #define MakeFindVFunc1_st0(BS, RE) \
     static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st0) \
@@ -200,6 +222,9 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp,
 #define MakeInsertVFunc1(BS, RE) \
     static FPMAP_FASTCALL struct fpmap_bent *FPMAP_NAME(insert##BS##re##RE) \
 	(FPMAP_pFP64, struct fpmap *map);
+#define MakePrefetchVFunc1(BS, RE) \
+    static FPMAP_FASTCALL void FPMAP_NAME(prefetch##BS##re##RE) \
+	(FPMAP_pFP64, const struct fpmap *map);
 
 // On 64-bit platforms, the check for index+fptag is always fused
 // (the faststash mode is always on).
@@ -229,6 +254,7 @@ static inline size_t t_find(const struct fpmap *map, uint64_t fp,
 #define MakeVFuncs(BS, RE) \
     MakeFindVFunc1_st0(BS, RE) \
     MakeInsertVFunc1(BS, RE) \
+    MakePrefetchVFunc1(BS, RE) \
     MakeFindVFuncs_st1(BS, RE)
 
 // There are no resized function for bsize == 2, becuase we first go 2->3->4,
@@ -253,6 +279,7 @@ do {							\
 	map->find = SelectStashVFunc(logsize0,		\
 	    FPMAP_NAME(find##BS##re##RE##st2fa0),	\
 	    FPMAP_NAME(find##BS##re##RE##st2fa1));	\
+    map->prefetch = FPMAP_NAME(prefetch##BS##re##RE);	\
 } while (0)
 
 static inline void setVFuncs(struct fpmap *map, int bsize, bool resized, int nstash)
@@ -457,16 +484,7 @@ static inline unsigned restash2(struct fpmap *map, int bsize, bool resized)
 static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
 	int bsize, bool resized)
 {
-    dFP2I;
-    if (resized) {
-	Sort2(i1, i2);
-	i1 |= fptag << map->logsize0;
-	i2 = i1 ^ xorme;
-	i1 &= map->mask1;
-	i2 &= map->mask1;
-    }
-    struct fpmap_bent *b1 = map->bb + i1 * bsize;
-    struct fpmap_bent *b2 = map->bb + i2 * bsize;
+    dFP2IB;
     map->cnt++; // strategical bump, may renege
     struct fpmap_bent *be = empty2(b1, b2, bsize);
     if (be) {
@@ -535,6 +553,11 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
     static FPMAP_FASTCALL struct fpmap_bent *FPMAP_NAME(insert##BS##re##RE) \
 	(FPMAP_pFP64, struct fpmap *map) \
     { return t_insert(map, fp, BS, RE); }
+#undef MakePrefetchVFunc1
+#define MakePrefetchVFunc1(BS, RE) \
+    static FPMAP_FASTCALL void FPMAP_NAME(prefetch##BS##re##RE) \
+	(FPMAP_pFP64, const struct fpmap *map) \
+    { t_prefetch(map, fp, BS, RE); }
 MakeAllVFuncs
 
 #include <assert.h>
@@ -558,15 +581,14 @@ struct fpmap *fpmap_new(int logsize)
     if (!map)
 	return free(bb), NULL;
 
-    map->find = FPMAP_NAME(find2re0st0);
-    map->insert = FPMAP_NAME(insert2re0);
     map->bsize = 2;
     map->nstash = 0;
     map->logsize0 = map->logsize1 = logsize;
     map->mask0 = map->mask1 = nb - 1;
     map->bb = bb;
 
-    return (struct fpmap *) map;
+    setVFuncs(map, 2, 0, 0);
+    return map;
 }
 
 void fpmap_free(struct fpmap *arg)

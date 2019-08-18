@@ -159,6 +159,7 @@ struct fpmap {
     size_t (FPMAP_FASTCALL *find)(FPMAP_pFP64, const struct fpmap *set,
 	    struct fpmap_bent *match[FPMAP_pMAXFIND]);
     struct fpmap_bent *(FPMAP_FASTCALL *insert)(FPMAP_pFP64, struct fpmap *map);
+    void (FPMAP_FASTCALL *prefetch)(FPMAP_pFP64, const struct fpmap *map);
     // The buckets (malloc'd); each bucket has bsize entries.
     // Two-dimensional structure is emulated with pointer arithmetic.
     struct fpmap_bent *bb;
@@ -187,6 +188,12 @@ static inline size_t fpmap_find(const struct fpmap *map, uint64_t fp,
 static inline struct fpmap_bent *fpmap_insert(struct fpmap *map, uint64_t fp)
 {
     return map->insert(FPMAP_aFP64(fp), map);
+}
+
+// Prefetch the buckets related to the fingerprint.
+static inline void fpmap_prefetch(const struct fpmap *map, uint64_t fp)
+{
+    map->prefetch(FPMAP_aFP64(fp), map);
 }
 
 #ifdef __GNUC__
