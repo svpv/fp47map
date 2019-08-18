@@ -591,11 +591,12 @@ struct fpmap *fpmap_new(int logsize)
     for (unsigned i = 0; i < SENTINELS; i++)
 	bb[nbe+i].fptag = 1;
 
+    map->bb = bb;
+    map->cnt = 0;
     map->bsize = 2;
     map->nstash = 0;
     map->logsize0 = map->logsize1 = logsize;
     map->mask0 = map->mask1 = nb - 1;
-    map->bb = bb;
 
     setVFuncs(map, 2, 0, 0);
     return map;
