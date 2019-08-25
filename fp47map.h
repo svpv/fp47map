@@ -151,6 +151,12 @@ struct fpmap_stash {
 #endif
 };
 
+#if FPMAP_BENT_SIZE * 8 - FPMAP_FPTAG_BITS == 32
+#define FPMAP_FIND32 1
+#else
+#define FPMAP_FIND32 0
+#endif
+
 // Expose the structure, to inline vfunc calls.
 struct fpmap {
     // This guy goes first and gets the best alignment (the same as buckets).
@@ -159,6 +165,10 @@ struct fpmap {
     // Pass fp arg first, eax:edx may hold hash() return value.
     size_t (FPMAP_FASTCALL *find)(FPMAP_pFP64, const struct fpmap *set,
 	    struct fpmap_bent *match[FPMAP_pMAXFIND]);
+#if FPMAP_FIND32
+    size_t (FPMAP_FASTCALL *find32)(FPMAP_pFP64, const struct fpmap *set,
+	    uint32_t match[FPMAP_pMAXFIND]);
+#endif
     struct fpmap_bent *(FPMAP_FASTCALL *insert)(FPMAP_pFP64, struct fpmap *map);
     void (FPMAP_FASTCALL *prefetch)(FPMAP_pFP64, const struct fpmap *map);
     // The buckets (malloc'd); each bucket has bsize entries.
@@ -184,6 +194,14 @@ static inline size_t fpmap_find(const struct fpmap *map, uint64_t fp,
 {
     return map->find(FPMAP_aFP64(fp), map, match);
 }
+
+#if FPMAP_FIND32
+static inline size_t fpmap_find32(const struct fpmap *map, uint64_t fp,
+	uint32_t match[FPMAP_pMAXFIND])
+{
+    return map->find32(FPMAP_aFP64(fp), map, match);
+}
+#endif
 
 // Request a new entry associated with the fingerprint.
 static inline struct fpmap_bent *fpmap_insert(struct fpmap *map, uint64_t fp)
