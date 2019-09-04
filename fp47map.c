@@ -18,488 +18,133 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include <stdint.h>
-#include <string.h>
+#include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <errno.h>
+#include "fp47map.h"
 
-// The implementation does not depend on the caller's struct fpmap_bent
-// exact definition, only on its size.
-struct fpmap_bent {
-#if FPMAP_BENT_SIZE * 8 - FPMAP_FPTAG_BITS == 32
-    uint32_t data;
-#else
-    unsigned char data[FPMAP_BENT_SIZE-FPMAP_FPTAG_BITS/8];
-#endif
-#if FPMAP_FPTAG_BITS == 16
-    uint16_t fptag;
-#else
-    uint32_t fptag;
-#endif
+union bent {
+    uint64_t copy8;
+    struct {
+	uint32_t fptag;
+	uint32_t pos;
+    };
 };
 
-#include "fpmap.h"
+#define BE0 (union bent){0}
+
+struct stash {
+    union bent be[2];
+    // Since bucket entries are looked up by index+fptag, we also need to
+    // remember the index (there are actually two symmetrical indices and
+    // we may store either of them, or possibly the smaller one).
+    uint32_t i1[2];
+};
 
 #define unlikely(cond) __builtin_expect(cond, 0)
+#define likely(cond) __builtin_expect(!(cond), 0)
 
 // The inline functions below rely heavily on constant propagation.
 #define inline inline __attribute__((always_inline))
 
-// How do we sort two numbers?  That's a major problem in computer science.
-// I thought that cmov might help, but this does not seem to be the case.
-#define Sort2asm(i1, i2)		\
-    do {				\
-	size_t i3;			\
-	asm("cmp %[i1],%[i2]\n\t"	\
-	    "cmovb %[i1],%[i3]\n\t"	\
-	    "cmovb %[i2],%[i1]\n\t"	\
-	    "cmovb %[i3],%[i2]\n\t"	\
-	    : [i1] "+r" (i1),		\
-	      [i2] "+r" (i2),		\
-	      [i3] "=rm" (i3)		\
-	    :: "cc");			\
-    } while (0)
-#define Sort2cmov(i1, i2)		\
-    do {				\
-	size_t i3 = i1;			\
-	size_t i4 = i2;			\
-	i1 = (i1 > i2) ? i2 : i1;	\
-	i2 = (i3 > i4) ? i3 : i2;	\
-    } while (0)
-#define Sort2swap(i1, i2)		\
-    do {				\
-	if (i1 > i2) {			\
-	    size_t i3 = i1;		\
-	    i1 = i2, i2 = i3;		\
-	}				\
-    } while (0)
-#define Sort2 Sort2swap
-
-#define mod16(fp) (1 + (uint32_t)(fp) % UINT16_MAX)
-#define mod32(fp) (1 + (fp) % UINT32_MAX)
-#define Golden32 UINT32_C(2654435761)
+// 1 + fp % UINT32_MAX
+static inline uint32_t mod32(uint64_t fp)
+{
+    uint32_t lo = fp;
+    uint32_t hi = fp >> 32;
+    lo += 1;
+    if (unlikely(lo == 0))
+	lo = 1;
+    lo += hi;
+    lo += (lo < hi);
+    return lo;
+}
 
 // Fingerprint to indices.
 // Note that the two buckets are completely symmetrical with regard to xor,
 // i.e. the information about "the first and true" index is not preserved.
 // This looses about 1 bit out of 32+logsize bits of hashing material.
-#if FPMAP_FPTAG_BITS == 16
 #define dFP2I					\
     uint32_t i1 = fp >> 32;			\
-    uint32_t fptag = mod16(fp);			\
-    uint32_t xorme = fptag * Golden32;		\
-    uint32_t i2 = i1 ^ xorme;			\
-    i1 &= map->mask0;				\
-    i2 &= map->mask0
-#else
-#define dFP2I					\
-    uint32_t i1 = fp;				\
     uint32_t fptag = mod32(fp);			\
-    uint32_t xorme = fptag;			\
-    uint32_t i2 = i1 ^ xorme;			\
+    uint32_t i2 = i1 ^ fptag;			\
     i1 &= map->mask0;				\
     i2 &= map->mask0
-#endif
 
-// Fingerprint to indices and buckets.
-#define dFP2IB					\
-    dFP2I;					\
+// Indices to buckets.
+#define dI2B					\
     if (resized) {				\
-	Sort2(i1, i2);				\
+	/* Indices need extra high bits. */	\
+	i1 = (i2 < i1) ? i2 : i1;		\
 	i1 |= fptag << map->logsize0;		\
-	i2 = i1 ^ xorme;			\
+	i2 = i1 ^ fptag;			\
 	i1 &= map->mask1;			\
 	i2 &= map->mask1;			\
     }						\
-    struct fpmap_bent *b1, *b2;			\
-    b1 = map->bb + i1 * bsize;			\
-    b2 = map->bb + i2 * bsize
-
-#if FPMAP_REG64
-#define uintREG_t uint64_t
-#else
-#define uintREG_t uint32_t
-#endif
+    union bent *b1 = map->bb;			\
+    union bent *b2 = map->bb;			\
+    b1 += i1 * bsize;				\
+    b2 += i2 * bsize
 
 // Template for map->find virtual functions.
-static inline size_t t_find(const struct fpmap *map, uint64_t fp,
-	struct fpmap_bent *match[FPMAP_pMAXFIND],
-	int bsize, bool resized, int nstash, bool faststash)
+static inline unsigned t_find(const struct fp47map *map, uint64_t fp,
+	uint32_t mpos[FP47MAP_pMAXFIND], int bsize, bool resized, int nstash)
 {
     dFP2I;
-    if (resized || nstash)
-	Sort2(i1, i2);
-
-    // How the stash is to be checked.
-    uintREG_t stlo;
-    assert(nstash >= faststash);
-    // If we are resized, then the calculation of stlo is the same as adding
-    // extra fptag high bits to i1, so we get stlo for free.
-    if (resized && faststash) {
-	stlo = i1 | (uintREG_t) fptag << map->logsize0;
-	i1 = stlo;
-	i2 = i1 ^ xorme;
-	i1 &= map->mask1;
-	i2 &= map->mask1;
-    }
-    else if (resized) {
-	// No need for stlo, will check i1+fptag.
-	i1 |= fptag << map->logsize0;
-	i2 = i1 ^ xorme;
-	i1 &= map->mask1;
-	i2 &= map->mask1;
-    }
-    else if (faststash) {
-	// On 64-bit platforms, there are enough bits to combine i1+fptag
-	// and even avoid referencing map->logsize0.  On 32-bit platforms,
-	// we only use faststash with 16-bit fptag and logsize0 <= 16.
-	stlo = i1 | (uintREG_t) fptag << sizeof(uintREG_t) * 4;
-	// Not resized, no extra bits for i1 and i2.
-    }
-
-    size_t n = 0;
-    struct fpmap_bent *b1 = map->bb + i1 * bsize;
-    struct fpmap_bent *b2 = map->bb + i2 * bsize;
-
-    // Branches are predictable, no need for cmov.
-#if 1
-#define AddMatch(tag1, tag2, ent)	\
-    do {				\
-	if (unlikely(tag1 == tag2))	\
-	    match[n++] = ent;		\
-    } while (0)
-#else
-#define AddMatch(tag1, tag2, ent)	\
-    do {				\
-	match[n] = ent;			\
-	n += (tag1 == tag2);		\
-    } while (0)
-#endif
-
-    // This can hopefully issue two memory loads in parallel.
-    if (bsize > 0) AddMatch(fptag, b1[0].fptag, &b1[0]);
-    if (bsize > 0) AddMatch(fptag, b2[0].fptag, &b2[0]);
-
-    struct fpmap_stash *st = (void *) &map->stash; // const cast
-#define AddStash(j)			\
-    do {				\
-	if (st->be[j].fptag == fptag && st->lo[j] == i1) \
-	    match[n++] = &st->be[j];	\
-    } while (0)
-
-    if (faststash) {
-	if (nstash > 0) AddMatch(stlo, st->lo[0], &st->be[0]);
-	if (nstash > 1) AddMatch(stlo, st->lo[1], &st->be[1]);
-    }
-    else if (nstash) {
-	if (nstash > 0) AddStash(0);
-	if (nstash > 1) AddStash(1);
-    }
-
-    if (bsize > 1) AddMatch(fptag, b1[1].fptag, &b1[1]);
-    if (bsize > 1) AddMatch(fptag, b2[1].fptag, &b2[1]);
-    if (bsize > 2) AddMatch(fptag, b1[2].fptag, &b1[2]);
-    if (bsize > 2) AddMatch(fptag, b2[2].fptag, &b2[2]);
-    if (bsize > 3) AddMatch(fptag, b1[3].fptag, &b1[3]);
-    if (bsize > 3) AddMatch(fptag, b2[3].fptag, &b2[3]);
-
+    unsigned n = 0;
+    // Check the stash first, unlikely to match.
+    struct stash *st = (void *) map->stash;
+    if (nstash > 0 && unlikely(st->be[0].fptag == fptag))
+	if (likely(st->i1[0] == i1 || st->i1[0] == i2))
+	    mpos[n++] = st->be[0].pos;
+    if (nstash > 1 && unlikely(st->be[1].fptag == fptag))
+	if (likely(st->i1[1] == i1 || st->i1[1] == i2))
+	    mpos[n++] = st->be[1].pos;
+    // Check the buckets.
+    dI2B;
+    if (bsize > 0 && b1[0].fptag == fptag) mpos[n++] = b1[0].pos;
+    if (bsize > 0 && b2[0].fptag == fptag) mpos[n++] = b2[0].pos;
+    if (bsize > 1 && b1[1].fptag == fptag) mpos[n++] = b1[1].pos;
+    if (bsize > 1 && b2[1].fptag == fptag) mpos[n++] = b2[1].pos;
+    if (bsize > 2 && b1[2].fptag == fptag) mpos[n++] = b1[2].pos;
+    if (bsize > 2 && b2[2].fptag == fptag) mpos[n++] = b2[2].pos;
+    if (bsize > 3 && b1[3].fptag == fptag) mpos[n++] = b1[3].pos;
+    if (bsize > 3 && b2[3].fptag == fptag) mpos[n++] = b2[3].pos;
     return n;
 }
 
-#if FPMAP_FIND32
-#include <emmintrin.h>
-#include <tmmintrin.h>
-#include <stdalign.h>
-
-static inline unsigned find32_2(void *b1, void *b2, uint32_t fptag,
-	uint32_t mpos[FPMAP_pMAXFIND])
-{
-    __m128i xkey = _mm_set1_epi32(fptag);
-    __m128i xb1 = _mm_loadu_si128(b1);
-    __m128i xb2 = _mm_loadu_si128(b2);
-    __m128i xpos = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(xb1), _mm_castsi128_ps(xb2), _MM_SHUFFLE(0, 2, 0, 2)));
-    __m128i xcmp = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(xb1), _mm_castsi128_ps(xb2), _MM_SHUFFLE(1, 3, 1, 3)));
-    xcmp = _mm_cmpeq_epi32(xcmp, xkey);
-    unsigned mask = _mm_movemask_ps(_mm_castsi128_ps(xcmp));
-#if 1
-    static const alignas(16) uint8_t mask2shuf[16][16] = {
-/* 0000 */ {   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 0001 */ { 0x00, 0x01, 0x02, 0x03,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 0010 */ { 0x04, 0x05, 0x06, 0x07,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 0011 */ { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 0100 */ { 0x08, 0x09, 0x0a, 0x0b,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 0101 */ { 0x00, 0x01, 0x02, 0x03, 0x08, 0x09, 0x0a, 0x0b,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 0110 */ { 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 0111 */ { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,   -1,   -1,   -1,   -1 },
-/* 1000 */ { 0x0c, 0x0d, 0x0e, 0x0f,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 1001 */ { 0x00, 0x01, 0x02, 0x03, 0x0c, 0x0d, 0x0e, 0x0f,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 1010 */ { 0x04, 0x05, 0x06, 0x07, 0x0c, 0x0d, 0x0e, 0x0f,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 1011 */ { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x0c, 0x0d, 0x0e, 0x0f,   -1,   -1,   -1,   -1 },
-/* 1100 */ { 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,   -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1 },
-/* 1101 */ { 0x00, 0x01, 0x02, 0x03, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,   -1,   -1,   -1,   -1 },
-/* 1110 */ { 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,   -1,   -1,   -1,   -1 },
-/* 1111 */ { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f },
-    };
-    __m128i xshuf =_mm_load_si128((void *) &mask2shuf[mask]);
-    xpos = _mm_shuffle_epi8(xpos, xshuf);
-    _mm_storeu_si128((void *) mpos, xpos);
-    const uint8_t mask2n[16] = {
-	/* 0000 */ 0,
-	/* 0001 */ 1,
-	/* 0010 */ 1,
-	/* 0011 */ 2,
-	/* 0100 */ 1,
-	/* 0101 */ 2,
-	/* 0110 */ 2,
-	/* 0111 */ 3,
-	/* 1000 */ 1,
-	/* 1001 */ 2,
-	/* 1010 */ 2,
-	/* 1011 */ 3,
-	/* 1100 */ 2,
-	/* 1101 */ 3,
-	/* 1110 */ 3,
-	/* 1111 */ 4,
-    };
-    return mask2n[mask];
-#else
-    switch (mask) {
-    case  0: /* 0000 */
-	return 0;
-    case  1: /* 0001 */
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 1;
-    case  2: /* 0010 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(1, 0, 2, 3));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 1;
-    case  3: /* 0011 */
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 2;
-    case  4: /* 0100 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(2, 0, 1, 3));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 1;
-    case  5: /* 0101 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(0, 2, 1, 3));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 1;
-    case  6: /* 0110 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(1, 2, 0, 3));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 2;
-    case  7: /* 0111 */
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 3;
-    case  8: /* 1000 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(3, 0, 1, 2));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 1;
-    case  9: /* 1001 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(0, 3, 1, 2));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 2;
-    case 10: /* 1010 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(1, 3, 0, 2));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 2;
-    case 11: /* 1011 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(0, 1, 3, 2));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 3;
-    case 12: /* 1100 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(2, 3, 0, 1));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 2;
-    case 13: /* 1101 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(0, 2, 3, 1));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 3;
-    case 14: /* 1110 */
-	xpos = _mm_shuffle_epi32(xpos, _MM_SHUFFLE(1, 2, 3, 0));
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 3;
-    case 15: /* 1111 */
-	_mm_storeu_si128((void *) mpos, xpos);
-	return 4;
-    }
-#endif
-}
-
-static inline size_t t_find32(const struct fpmap *map, uint64_t fp,
-	uint32_t match[FPMAP_pMAXFIND],
-	int bsize, bool resized, int nstash, bool faststash)
-{
-    if (FPMAP_FPTAG_BITS == 32 && bsize == 2 && !resized && nstash == 0) {
-	dFP2IB;
-	return find32_2(b1, b2, fptag, match);
-    }
-    dFP2I;
-    if (resized || nstash)
-	Sort2(i1, i2);
-
-    // How the stash is to be checked.
-    uintREG_t stlo;
-    assert(nstash >= faststash);
-    // If we are resized, then the calculation of stlo is the same as adding
-    // extra fptag high bits to i1, so we get stlo for free.
-    if (resized && faststash) {
-	stlo = i1 | (uintREG_t) fptag << map->logsize0;
-	i1 = stlo;
-	i2 = i1 ^ xorme;
-	i1 &= map->mask1;
-	i2 &= map->mask1;
-    }
-    else if (resized) {
-	// No need for stlo, will check i1+fptag.
-	i1 |= fptag << map->logsize0;
-	i2 = i1 ^ xorme;
-	i1 &= map->mask1;
-	i2 &= map->mask1;
-    }
-    else if (faststash) {
-	// On 64-bit platforms, there are enough bits to combine i1+fptag
-	// and even avoid referencing map->logsize0.  On 32-bit platforms,
-	// we only use faststash with 16-bit fptag and logsize0 <= 16.
-	stlo = i1 | (uintREG_t) fptag << sizeof(uintREG_t) * 4;
-	// Not resized, no extra bits for i1 and i2.
-    }
-
-    size_t n = 0;
-    struct fpmap_bent *b1 = map->bb + i1 * bsize;
-    struct fpmap_bent *b2 = map->bb + i2 * bsize;
-
-    // Branches are predictable, no need for cmov.
-#if 0
-#define AddMatch(tag1, tag2, ent)	\
-    do {				\
-	if (unlikely(tag1 == tag2))	\
-	    match[n++] = (ent)->data;	\
-    } while (0)
-#else
-#define AddMatch(tag1, tag2, ent)	\
-    do {				\
-	match[n] = (ent)->data;		\
-	n += (tag1 == tag2);		\
-    } while (0)
-#endif
-
-    // This can hopefully issue two memory loads in parallel.
-    if (bsize > 0) AddMatch(fptag, b1[0].fptag, &b1[0]);
-    if (bsize > 0) AddMatch(fptag, b2[0].fptag, &b2[0]);
-
-    struct fpmap_stash *st = (void *) &map->stash; // const cast
-#define AddStash(j)			\
-    do {				\
-	if (st->be[j].fptag == fptag && st->lo[j] == i1) \
-	    match[n++] = st->be[j].data;	\
-    } while (0)
-
-    if (faststash) {
-	if (nstash > 0) AddMatch(stlo, st->lo[0], &st->be[0]);
-	if (nstash > 1) AddMatch(stlo, st->lo[1], &st->be[1]);
-    }
-    else if (nstash) {
-	if (nstash > 0) AddStash(0);
-	if (nstash > 1) AddStash(1);
-    }
-
-    if (bsize > 1) AddMatch(fptag, b1[1].fptag, &b1[1]);
-    if (bsize > 1) AddMatch(fptag, b2[1].fptag, &b2[1]);
-    if (bsize > 2) AddMatch(fptag, b1[2].fptag, &b1[2]);
-    if (bsize > 2) AddMatch(fptag, b2[2].fptag, &b2[2]);
-    if (bsize > 3) AddMatch(fptag, b1[3].fptag, &b1[3]);
-    if (bsize > 3) AddMatch(fptag, b2[3].fptag, &b2[3]);
-
-    return n;
-}
-#endif
-
-static inline void t_prefetch(const struct fpmap *map, uint64_t fp,
+static inline void t_prefetch(const struct fp47map *map, uint64_t fp,
       int bsize, int resized)
 {
-    dFP2IB;
-    __builtin_prefetch(&b1[0].fptag);
-    __builtin_prefetch(&b2[0].fptag);
+    dFP2I; dI2B;
+    __builtin_prefetch(b1);
+    __builtin_prefetch(b2);
 }
 
 // Virtual functions, prototypes for now.
-#define MakeFindVFunc1_st0(BS, RE) \
-    static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st0) \
-	(FPMAP_pFP64, const struct fpmap *map, \
-	 struct fpmap_bent *match[FPMAP_pMAXFIND]);
-#define MakeFindVFunc1_st1(BS, RE, ST, FA) \
-    static FPMAP_FASTCALL size_t FPMAP_NAME(find##BS##re##RE##st##ST##fa##FA) \
-	(FPMAP_pFP64, const struct fpmap *map, \
-	 struct fpmap_bent *match[FPMAP_pMAXFIND]);
-#define MakeFind32VFunc1_st0(BS, RE) \
-    static FPMAP_FASTCALL size_t FPMAP_NAME(find32##BS##re##RE##st0) \
-	(FPMAP_pFP64, const struct fpmap *map, \
-	 uint32_t match[FPMAP_pMAXFIND]);
-#define MakeFind32VFunc1_st1(BS, RE, ST, FA) \
-    static FPMAP_FASTCALL size_t FPMAP_NAME(find32##BS##re##RE##st##ST##fa##FA) \
-	(FPMAP_pFP64, const struct fpmap *map, \
-	 uint32_t match[FPMAP_pMAXFIND]);
-#define MakeInsertVFunc1(BS, RE) \
-    static FPMAP_FASTCALL struct fpmap_bent *FPMAP_NAME(insert##BS##re##RE) \
-	(FPMAP_pFP64, struct fpmap *map);
-#define MakePrefetchVFunc1(BS, RE) \
-    static FPMAP_FASTCALL void FPMAP_NAME(prefetch##BS##re##RE) \
-	(FPMAP_pFP64, const struct fpmap *map);
-
-// On 64-bit platforms, the check for index+fptag is always fused
-// (the faststash mode is always on).
-#if FPMAP_REG64
-#define MakeFindVFuncs_st1(BS, RE) \
-    MakeFindVFunc1_st1(BS, RE, 1, 1) \
-    MakeFindVFunc1_st1(BS, RE, 2, 1)
-#define MakeFind32VFuncs_st1(BS, RE) \
-    MakeFind32VFunc1_st1(BS, RE, 1, 1) \
-    MakeFind32VFunc1_st1(BS, RE, 2, 1)
-#define SelectStashVFunc(logsize0, fa0, fa1) fa1
-// On 32-bit platforms with 32-bit fptag, the fassthash mode is always off.
-#elif FPMAP_BENT_SIZE == 32
-#define MakeFindVFuncs_st1(BS, RE) \
-    MakeFindVFunc1_st1(BS, RE, 1, 0) \
-    MakeFindVFunc1_st1(BS, RE, 2, 0)
-#define MakeFind32VFuncs_st1(BS, RE) \
-    MakeFind32VFunc1_st1(BS, RE, 1, 0) \
-    MakeFind32VFunc1_st1(BS, RE, 2, 0)
-#define SelectStashVFunc(logsize0, fa0, fa1) fa0
-// Otherwise, there will be a runtime check.
-#else
-#define MakeFindVFuncs_st1(BS, RE) \
-    MakeFindVFunc1_st1(BS, RE, 1, 0) \
-    MakeFindVFunc1_st1(BS, RE, 2, 0) \
-    MakeFindVFunc1_st1(BS, RE, 1, 1) \
-    MakeFindVFunc1_st1(BS, RE, 2, 1)
-#define MakeFind32VFuncs_st1(BS, RE) \
-    MakeFind32VFunc1_st1(BS, RE, 1, 0) \
-    MakeFind32VFunc1_st1(BS, RE, 2, 0) \
-    MakeFind32VFunc1_st1(BS, RE, 1, 1) \
-    MakeFind32VFunc1_st1(BS, RE, 2, 1)
-#define SelectStashVFunc(logsize0, fa0, fa1) (logsize0 <= 16 ? fa1 : fa0)
-#endif
+#define MakeFindVFunc(BS, RE, ST) \
+    static FP47MAP_FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(FP47MAP_pFP64, \
+	    const struct fp47map *map, uint32_t mpos[FP47MAP_pMAXFIND]);
+#define MakeInsertVFunc(BS, RE) \
+    static FP47MAP_FASTCALL int fp47map_insert##BS##re##RE(FP47MAP_pFP64, \
+	    struct fp47map *map, uint32_t pos);
+#define MakePrefetchVFunc(BS, RE) \
+    static FP47MAP_FASTCALL void fp47map_prefetch##BS##re##RE(FP47MAP_pFP64, \
+	    const struct fp47map *map);
 
 // For the same bucket size, find and insert are placed back to back in memory.
 // This should spare us some L1i cache misses.
-#if FPMAP_FIND32
 #define MakeVFuncs(BS, RE) \
-    MakeFindVFunc1_st0(BS, RE) \
-    MakeFind32VFunc1_st0(BS, RE) \
-    MakeInsertVFunc1(BS, RE) \
-    MakePrefetchVFunc1(BS, RE) \
-    MakeFindVFuncs_st1(BS, RE) \
-    MakeFind32VFuncs_st1(BS, RE)
-#else
-#define MakeVFuncs(BS, RE) \
-    MakeFindVFunc1_st0(BS, RE) \
-    MakeInsertVFunc1(BS, RE) \
-    MakePrefetchVFunc1(BS, RE) \
-    MakeFindVFuncs_st1(BS, RE)
-#endif
+    MakePrefetchVFunc(BS, RE) \
+    MakeFindVFunc(BS, RE, 0) \
+    MakeInsertVFunc(BS, RE) \
+    MakeFindVFunc(BS, RE, 1) \
+    MakeFindVFunc(BS, RE, 2)
 
 // There are no resized function for bsize == 2, becuase we first go 2->3->4,
-// then double the number of buckets and go 3->4 again.
+// then double the number of buckets for 4->3 and then go 3->4 again.
 #define MakeAllVFuncs \
     MakeVFuncs(2, 0) \
     MakeVFuncs(3, 0) MakeVFuncs(4, 0) \
@@ -507,70 +152,109 @@ static inline void t_prefetch(const struct fpmap *map, uint64_t fp,
 MakeAllVFuncs
 
 // When BS and RE are literals.
-#if FPMAP_FIND32
-#define setVFuncsBR(map, BS, RE, nstash, logsize0)	\
-do {							\
-    map->insert = FPMAP_NAME(insert##BS##re##RE);	\
-    if (nstash == 0)					\
-	map->find = FPMAP_NAME(find##BS##re##RE##st0);	\
-    else if (nstash == 1)				\
-	map->find = SelectStashVFunc(logsize0,		\
-	    FPMAP_NAME(find##BS##re##RE##st1fa0),	\
-	    FPMAP_NAME(find##BS##re##RE##st1fa1));	\
-    else						\
-	map->find = SelectStashVFunc(logsize0,		\
-	    FPMAP_NAME(find##BS##re##RE##st2fa0),	\
-	    FPMAP_NAME(find##BS##re##RE##st2fa1));	\
-    if (nstash == 0)					\
-	map->find32 = FPMAP_NAME(find32##BS##re##RE##st0);	\
-    else if (nstash == 1)				\
-	map->find32 = SelectStashVFunc(logsize0,	\
-	    FPMAP_NAME(find32##BS##re##RE##st1fa0),	\
-	    FPMAP_NAME(find32##BS##re##RE##st1fa1));	\
-    else						\
-	map->find32 = SelectStashVFunc(logsize0,	\
-	    FPMAP_NAME(find32##BS##re##RE##st2fa0),	\
-	    FPMAP_NAME(find32##BS##re##RE##st2fa1));	\
-    map->prefetch = FPMAP_NAME(prefetch##BS##re##RE);	\
-} while (0)
-#else
-#define setVFuncsBR(map, BS, RE, nstash, logsize0)	\
-do {							\
-    map->insert = FPMAP_NAME(insert##BS##re##RE);	\
-    if (nstash == 0)					\
-	map->find = FPMAP_NAME(find##BS##re##RE##st0);	\
-    else if (nstash == 1)				\
-	map->find = SelectStashVFunc(logsize0,		\
-	    FPMAP_NAME(find##BS##re##RE##st1fa0),	\
-	    FPMAP_NAME(find##BS##re##RE##st1fa1));	\
-    else						\
-	map->find = SelectStashVFunc(logsize0,		\
-	    FPMAP_NAME(find##BS##re##RE##st2fa0),	\
-	    FPMAP_NAME(find##BS##re##RE##st2fa1));	\
-    map->prefetch = FPMAP_NAME(prefetch##BS##re##RE);	\
-} while (0)
-#endif
+#define setVFuncsA(map, BS, RE, ST)			\
+    map->find =						\
+	(ST == 0) ? fp47map_find##BS##re##RE##st0 :	\
+	(ST == 1) ? fp47map_find##BS##re##RE##st1 :	\
+		    fp47map_find##BS##re##RE##st2 ,	\
+    map->insert =   fp47map_insert##BS##re##RE    ,	\
+    map->prefetch = fp47map_prefetch##BS##re##RE
 
-static inline void setVFuncs(struct fpmap *map, int bsize, bool resized, int nstash)
+static inline void setVFuncs(struct fp47map *map, int bsize, bool resized, int nstash)
 {
     if (bsize == 2) {
-	if (resized)
-	    assert(0);
-	else
-	    setVFuncsBR(map, 2, 0, nstash, map->logsize0);
+	if (resized) assert(0);
+	else         setVFuncsA(map, 2, 0, nstash);
     }
-    else if (bsize == 3) {
-	if (resized)
-	    setVFuncsBR(map, 3, 1, nstash, map->logsize0);
-	else
-	    setVFuncsBR(map, 3, 0, nstash, map->logsize0);
+    if (bsize == 3) {
+	if (resized) setVFuncsA(map, 3, 1, nstash);
+	else         setVFuncsA(map, 3, 0, nstash);
     }
-    else {
-	if (resized)
-	    setVFuncsBR(map, 4, 1, nstash, map->logsize0);
-	else
-	    setVFuncsBR(map, 4, 0, nstash, map->logsize0);
+    if (bsize == 4) {
+	if (resized) setVFuncsA(map, 4, 1, nstash);
+	else         setVFuncsA(map, 4, 0, nstash);
     }
+}
+
+// Sentinels at the end of map->bb, for fp47map_next.
+#define SENTINELS 3
+
+struct fp47map *fp47map_new(int logsize)
+{
+    assert(logsize >= 0);
+    if (logsize < 4)
+	logsize = 4;
+    // The ultimate limit imposed by the hashing scheme is 2^32 buckets.
+    if (logsize > 32)
+	return errno = E2BIG, NULL;
+    // The limit on 32-bit platforms is 2GB, logsize=28 allocates 4GB.
+    if (logsize > 27 && sizeof(size_t) < 5)
+	return errno = ENOMEM, NULL;
+
+    // Starting with two slots per bucket.
+    size_t nb = (size_t) 1 << logsize;
+    size_t nbe = 2 * nb;
+    union bent *bb = calloc(nbe + SENTINELS, sizeof BE0);
+    if (!bb)
+	return NULL;
+
+    struct fp47map *map = malloc(sizeof *map);
+    if (!map)
+	return free(bb), NULL;
+
+    for (unsigned i = 0; i < SENTINELS; i++)
+	bb[nbe+i].fptag = UINT32_MAX;
+
+    map->bb = bb;
+    map->cnt = 0;
+    map->bsize = 2;
+    map->nstash = 0;
+    map->logsize0 = map->logsize1 = logsize;
+    map->mask0 = map->mask1 = nb - 1;
+
+    setVFuncs(map, 2, 0, 0);
+    return map;
+}
+
+void fp47map_free(struct fp47map *map)
+{
+    if (!map)
+	return;
+#ifdef FP47MAP_DEBUG
+    // The number of entries must match the occupied slots.
+    size_t cnt = 0;
+    union bent *bb = map->bb;
+    size_t n = map->bsize * (map->mask1 + (size_t) 1);
+    for (size_t i = 0; i < n; i += 4)
+	cnt += (bb[i+0].fptag > 0)
+	    +  (bb[i+1].fptag > 0)
+	    +  (bb[i+2].fptag > 0)
+	    +  (bb[i+3].fptag > 0);
+    assert(cnt == map->cnt);
+#endif
+    free(map->bb);
+    free(map);
+}
+
+uint32_t *FP47MAP_FASTCALL fp47map_next(const struct fp47map *map, size_t *iter)
+{
+    size_t i = *iter;
+    size_t n = map->bsize * (map->mask1 + (size_t) 1);
+    union bent *bb = map->bb;
+    while (bb[i].fptag == 0)
+	i++;
+    if (i < n)
+	return *iter = i + 1, &bb[i].pos;
+    struct stash *st = (void *) &map->stash;
+    if (map->nstash == 0)
+	return *iter = 0, NULL;
+    if (i == n)
+	return *iter = n + 1, &st->be[0].pos;
+    if (map->nstash == 1)
+	return *iter = 0, NULL;
+    if (i == n + 1)
+	return *iter = n + 2, &st->be[1].pos;
+    return *iter = 0, NULL;
 }
 
 static inline struct fpmap_bent *empty2(struct fpmap_bent *b1, struct fpmap_bent *b2,
@@ -846,82 +530,3 @@ static inline struct fpmap_bent *t_insert(struct fpmap *map, uint64_t fp,
 	(FPMAP_pFP64, const struct fpmap *map) \
     { t_prefetch(map, fp, BS, RE); }
 MakeAllVFuncs
-
-#include <assert.h>
-#include <errno.h>
-
-struct fpmap *fpmap_new(int logsize)
-{
-    assert(logsize >= 0);
-    if (logsize < 4)
-	logsize = 4;
-    if (logsize > 32)
-	return errno = E2BIG, NULL;
-
-    // Starting with two slots per bucket.
-    size_t nb = (size_t) 1 << logsize;
-    size_t nbe = 2 * nb;
-    struct fpmap_bent *bb = calloc(nbe + SENTINELS, sizeof BE0);
-    if (!bb)
-	return NULL;
-
-    struct fpmap *map = malloc(sizeof *map);
-    if (!map)
-	return free(bb), NULL;
-
-    for (unsigned i = 0; i < SENTINELS; i++)
-	bb[nbe+i].fptag = 1;
-
-    map->bb = bb;
-    map->cnt = 0;
-    map->bsize = 2;
-    map->nstash = 0;
-    map->logsize0 = map->logsize1 = logsize;
-    map->mask0 = map->mask1 = nb - 1;
-
-    setVFuncs(map, 2, 0, 0);
-    return map;
-}
-
-void fpmap_free(struct fpmap *arg)
-{
-    struct fpmap *map = (void *) arg;
-    if (!map)
-	return;
-#ifdef FPMAP_DEBUG
-    // The number of entries must match the occupied slots.
-    size_t cnt = 0;
-    struct fpmap_bent *bb = map->bb;
-    size_t n = map->bsize * (map->mask1 + (size_t) 1);
-    for (size_t i = 0; i < n; i += 4)
-	cnt += (bb[i+0].fptag > 0)
-	    +  (bb[i+1].fptag > 0)
-	    +  (bb[i+2].fptag > 0)
-	    +  (bb[i+3].fptag > 0);
-    assert(cnt == map->cnt);
-#endif
-    free(map->bb);
-    free(map);
-}
-
-struct fpmap_bent *FPMAP_FASTCALL fpmap_next(const struct fpmap *map,
-					     size_t *iter)
-{
-    size_t i = *iter;
-    struct fpmap_bent *bb = map->bb;
-    size_t n = map->bsize * (map->mask1 + (size_t) 1);
-    while (bb[i].fptag == 0)
-	i++;
-    if (i < n)
-	return *iter = i + 1, &bb[i];
-    struct fpmap_stash *st = (void *) &map->stash; // const cast
-    if (map->nstash == 0)
-	return *iter = 0, NULL;
-    if (i == n)
-	return *iter = n + 1, &st->be[0];
-    if (map->nstash == 1)
-	return *iter = 0, NULL;
-    if (i == n + 1)
-	return *iter = n + 2, &st->be[1];
-    return *iter = 0, NULL;
-}
