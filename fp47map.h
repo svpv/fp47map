@@ -147,12 +147,6 @@ static inline void fp47map_prefetch(const struct fp47map *map, uint64_t fp)
     map->prefetch(FP47MAP_aFP64(fp), map);
 }
 
-// Iterate the bucket entries (in no particular order).  iter must be
-// initially set to zero; it picks up where we left off.  On each call,
-// the pointer to a next position is returned as the iterator gets advanced.
-// After all the entries are traversed, returns NULL and resets iter to zero.
-uint32_t *FP47MAP_FASTCALL fp47map_next(const struct fp47map *map, size_t *iter);
-
 #ifdef __GNUC__
 #pragma GCC visibility pop
 #endif

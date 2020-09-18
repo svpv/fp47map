@@ -176,9 +176,6 @@ static inline void setVFuncs(struct fp47map *map, int bsize, bool resized, int n
     }
 }
 
-// Sentinels at the end of map->bb, for fp47map_next.
-#define SENTINELS 3
-
 struct fp47map *fp47map_new(int logsize)
 {
     assert(logsize >= 0);
@@ -194,16 +191,13 @@ struct fp47map *fp47map_new(int logsize)
     // Starting with two slots per bucket.
     size_t nb = (size_t) 1 << logsize;
     size_t nbe = 2 * nb;
-    union bent *bb = calloc(nbe + SENTINELS, sizeof BE0);
+    union bent *bb = calloc(nbe, sizeof BE0);
     if (!bb)
 	return NULL;
 
     struct fp47map *map = malloc(sizeof *map);
     if (!map)
 	return free(bb), NULL;
-
-    for (unsigned i = 0; i < SENTINELS; i++)
-	bb[nbe+i].fptag = UINT32_MAX;
 
     map->bb = bb;
     map->cnt = 0;
@@ -234,27 +228,6 @@ void fp47map_free(struct fp47map *map)
 #endif
     free(map->bb);
     free(map);
-}
-
-uint32_t *FP47MAP_FASTCALL fp47map_next(const struct fp47map *map, size_t *iter)
-{
-    size_t i = *iter;
-    size_t n = map->bsize * (map->mask1 + (size_t) 1);
-    union bent *bb = map->bb;
-    while (bb[i].fptag == 0)
-	i++;
-    if (i < n)
-	return *iter = i + 1, &bb[i].pos;
-    struct stash *st = (void *) &map->stash;
-    if (map->nstash == 0)
-	return *iter = 0, NULL;
-    if (i == n)
-	return *iter = n + 1, &st->be[0].pos;
-    if (map->nstash == 1)
-	return *iter = 0, NULL;
-    if (i == n + 1)
-	return *iter = n + 2, &st->be[1].pos;
-    return *iter = 0, NULL;
 }
 
 static inline union bent *empty2(union bent *b1, union bent *b2, int bsize)
@@ -417,15 +390,13 @@ static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
     // With 2->3 and 3->4 though, we just extend the buckets.
     size_t nb = mask + (size_t) 1;
     size_t nbe = (bsize + 1) * nb;
-    union bent *bb = realloc(map->bb, (nbe + SENTINELS) * sizeof BE0);
+    union bent *bb = realloc(map->bb, nbe * sizeof BE0);
     if (!bb) {
 	uint32_t fpout = kickback(map->bb, kbe, i1, maxkick, mask, bsize);
 	assert(fpout == fptag);
 	map->cnt--;
 	return -1;
     }
-    for (unsigned i = 0; i < SENTINELS; i++)
-	bb[nbe+i].fptag = 1;
     if (bsize == 2) reinterp23(bb, nb);
     if (bsize == 3) reinterp34(bb, nb);
     map->bb = bb;
