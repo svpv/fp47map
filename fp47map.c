@@ -23,7 +23,7 @@
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
-#include "fp47map.h"
+#include "fp47m.h"
 
 union bent {
     uint64_t copy8;
@@ -42,36 +42,6 @@ struct stash {
     // we may store either of them, or possibly the smaller one).
     uint32_t i1[2];
 };
-
-#define unlikely(cond) __builtin_expect(cond, 0)
-#define likely(cond) __builtin_expect(!(cond), 0)
-
-// The inline functions below rely heavily on constant propagation.
-#define inline inline __attribute__((always_inline))
-
-// 1 + fp % UINT32_MAX
-static inline uint32_t mod32(uint64_t fp)
-{
-    uint32_t lo = fp;
-    uint32_t hi = fp >> 32;
-    lo += 1;
-    if (unlikely(lo == 0))
-	lo = 1;
-    lo += hi;
-    lo += (lo < hi);
-    return lo;
-}
-
-// Fingerprint to indices.
-// Note that the two buckets are completely symmetrical with regard to xor,
-// i.e. the information about "the first and true" index is not preserved.
-// This looses about 1 bit out of 32+logsize bits of hashing material.
-#define dFP2I					\
-    uint32_t i1 = fp >> 32;			\
-    uint32_t fptag = mod32(fp);			\
-    uint32_t i2 = i1 ^ fptag;			\
-    i1 &= map->mask0;				\
-    i2 &= map->mask0
 
 // Indices to buckets.
 #define dI2B					\
