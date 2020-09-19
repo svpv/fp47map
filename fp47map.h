@@ -67,11 +67,6 @@ void fp47map_free(struct fp47map *map);
 // Since the buckets are fixed-size, the map guarantees O(1) worst-case lookup.
 // Use FP47MAP_MAXFIND to specify the array size for fp47map_find().
 #define FP47MAP_MAXFIND 10
-#ifdef __cplusplus
-#define FP47M_pMAXFIND 10 // for use in function prototypes
-#else
-#define FP47M_pMAXFIND static 10
-#endif
 
 #if defined(__i386__) && !defined(_WIN32) && !defined(__CYGWIN__)
 #define FP47M_FASTCALL __attribute__((regparm(3)))
@@ -87,8 +82,7 @@ struct fp47map {
     unsigned char stash[24];
     // Virtual functions, depend on the bucket size, switched on resize.
     // Pass fp arg first, eax:edx may hold hash() return value.
-    unsigned (FP47M_FASTCALL *find)(uint64_t fp, const struct fp47map *map,
-	    uint32_t mpos[FP47M_pMAXFIND]);
+    unsigned (FP47M_FASTCALL *find)(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
     int (FP47M_FASTCALL *insert)(uint64_t fp, struct fp47map *map, uint32_t pos);
     void (FP47M_FASTCALL *prefetch)(uint64_t fp, const struct fp47map *map);
     // The buckets (malloc'd); each bucket has bsize entries.
@@ -109,7 +103,7 @@ struct fp47map {
 // Obtain the set of positions matching a fingerprint.
 // Returns the number of matches found (up to FP47MAP_MAXFIND, typically 0 or 1).
 static inline unsigned fp47map_find(const struct fp47map *map, uint64_t fp,
-	uint32_t mpos[FP47M_pMAXFIND])
+	uint32_t mpos[FP47MAP_MAXFIND])
 {
     return map->find(fp, map, mpos);
 }

@@ -90,7 +90,7 @@ static inline uint32_t mod32(uint64_t fp)
 
 // Template for map->find virtual functions.
 static inline unsigned t_find(const struct fp47map *map, uint64_t fp,
-	uint32_t mpos[FP47M_pMAXFIND], int bsize, bool resized, int nstash)
+	uint32_t *mpos, int bsize, bool resized, int nstash)
 {
     dFP2I;
     unsigned n = 0;
@@ -126,7 +126,7 @@ static inline void t_prefetch(const struct fp47map *map, uint64_t fp,
 // Virtual functions, prototypes for now.
 #define MakeFindVFunc(BS, RE, ST) \
     static FP47M_FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
-	    const struct fp47map *map, uint32_t mpos[FP47M_pMAXFIND]);
+	    const struct fp47map *map, uint32_t *mpos);
 #define MakeInsertVFunc(BS, RE) \
     static FP47M_FASTCALL int fp47map_insert##BS##re##RE(uint64_t fp, \
 	    struct fp47map *map, uint32_t pos);
@@ -416,7 +416,7 @@ static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
 #undef MakeFindVFunc
 #define MakeFindVFunc(BS, RE, ST) \
     static FP47M_FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
-	    const struct fp47map *map, uint32_t mpos[FP47M_pMAXFIND]) \
+	    const struct fp47map *map, uint32_t *mpos) \
     { return t_find(map, fp, mpos, BS, RE, ST); }
 #undef MakeInsertVFunc
 #define MakeInsertVFunc(BS, RE) \
