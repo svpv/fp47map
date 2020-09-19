@@ -68,36 +68,15 @@ void fp47map_free(struct fp47map *map);
 // Use FP47MAP_MAXFIND to specify the array size for fp47map_find().
 #define FP47MAP_MAXFIND 10
 #ifdef __cplusplus
-#define FP47MAP_pMAXFIND 10 // for use in function prototypes
+#define FP47M_pMAXFIND 10 // for use in function prototypes
 #else
-#define FP47MAP_pMAXFIND static 10
+#define FP47M_pMAXFIND static 10
 #endif
 
-// i386 convention: on Windows, stick to fastcall, for compatibility with msvc.
-#if (defined(_WIN32) || defined(__CYGWIN__)) && \
-    (defined(_M_IX86) || defined(__i386__))
-#define FP47MAP_MSFASTCALL 1
-#if defined(__GNUC__)
-#define FP47MAP_FASTCALL __attribute__((fastcall))
+#if defined(__i386__) && !defined(_WIN32) && !defined(__CYGWIN__)
+#define FP47M_FASTCALL __attribute__((regparm(3)))
 #else
-#define FP47MAP_FASTCALL __fastcall
-#endif
-#else // otherwise, use regparm(3).
-#define FP47MAP_MSFASTCALL 0
-#if defined(__i386__)
-#define FP47MAP_FASTCALL __attribute__((regparm(3)))
-#else
-#define FP47MAP_FASTCALL
-#endif
-#endif
-
-// fastcall has trouble passing uint64_t in registers.
-#if FP47MAP_MSFASTCALL
-#define FP47MAP_pFP64 uint32_t lo, uint32_t hi
-#define FP47MAP_aFP64(fp) fp, fp >> 32
-#else
-#define FP47MAP_pFP64 uint64_t fp
-#define FP47MAP_aFP64(fp) fp
+#define FP47M_FASTCALL
 #endif
 
 // Expose the structure, to inline vfunc calls.
@@ -108,10 +87,10 @@ struct fp47map {
     unsigned char stash[24];
     // Virtual functions, depend on the bucket size, switched on resize.
     // Pass fp arg first, eax:edx may hold hash() return value.
-    unsigned (FP47MAP_FASTCALL *find)(FP47MAP_pFP64, const struct fp47map *map,
-	    uint32_t mpos[FP47MAP_pMAXFIND]);
-    int (FP47MAP_FASTCALL *insert)(FP47MAP_pFP64, struct fp47map *map, uint32_t pos);
-    void (FP47MAP_FASTCALL *prefetch)(FP47MAP_pFP64, const struct fp47map *map);
+    unsigned (FP47M_FASTCALL *find)(uint64_t fp, const struct fp47map *map,
+	    uint32_t mpos[FP47M_pMAXFIND]);
+    int (FP47M_FASTCALL *insert)(uint64_t fp, struct fp47map *map, uint32_t pos);
+    void (FP47M_FASTCALL *prefetch)(uint64_t fp, const struct fp47map *map);
     // The buckets (malloc'd); each bucket has bsize entries.
     void *bb;
     // The total number of entries added to buckets,
@@ -130,21 +109,21 @@ struct fp47map {
 // Obtain the set of positions matching a fingerprint.
 // Returns the number of matches found (up to FP47MAP_MAXFIND, typically 0 or 1).
 static inline unsigned fp47map_find(const struct fp47map *map, uint64_t fp,
-	uint32_t mpos[FP47MAP_pMAXFIND])
+	uint32_t mpos[FP47M_pMAXFIND])
 {
-    return map->find(FP47MAP_aFP64(fp), map, mpos);
+    return map->find(fp, map, mpos);
 }
 
 // Insert a new entry, that is, a new position associated with a fingerprint.
 static inline int fp47map_insert(struct fp47map *map, uint64_t fp, uint32_t pos)
 {
-    return map->insert(FP47MAP_aFP64(fp), map, pos);
+    return map->insert(fp, map, pos);
 }
 
 // Prefetch the buckets related to a fingerprint.
 static inline void fp47map_prefetch(const struct fp47map *map, uint64_t fp)
 {
-    map->prefetch(FP47MAP_aFP64(fp), map);
+    map->prefetch(fp, map);
 }
 
 #ifdef __GNUC__
