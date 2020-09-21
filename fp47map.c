@@ -25,16 +25,6 @@
 #include <errno.h>
 #include "fp47m.h"
 
-union bent {
-    uint64_t copy8;
-    struct {
-	uint32_t fptag;
-	uint32_t pos;
-    };
-};
-
-#define BE0 (union bent){0}
-
 struct stash {
     union bent be[2];
     // Since bucket entries are looked up by index+fptag, we also need to

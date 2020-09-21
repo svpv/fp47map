@@ -76,6 +76,14 @@ static const struct {
 #define popcnt4(x) (unsigned)__builtin_popcount(x)
 #endif
 
+#define ctz32(x) (unsigned)__builtin_ctz(x)
+
+union buck2 {
+    __m128 ps;
+    __m128i x;
+    union bent be[2];
+};
+
 static inline unsigned find2(__m128 xb1, __m128 xb2, uint32_t fptag, void *mpos)
 {
     __m128i xtag = _mm_castps_si128(_mm_shuffle_ps(xb1, xb2, _MM_SHUFFLE(2, 0, 2, 0)));
@@ -91,4 +99,40 @@ unsigned FP47M_FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map,
     dFP2I;
     __m128 *bb = map->bb;
     return find2(bb[i1], bb[i2], fptag, mpos);
+}
+
+int FP47M_FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
+{
+    dFP2I;
+    union buck2 *bb = map->bb;
+    union buck2 *b1 = &bb[i1];
+    union buck2 *b2 = &bb[i2];
+    __m128i xtag = _mm_castps_si128(_mm_shuffle_ps(b1->ps, b2->ps, _MM_SHUFFLE(2, 0, 2, 0)));
+    __m128i xcmp = _mm_cmpeq_epi32(_mm_setzero_si128(), xtag);
+    unsigned slots = _mm_movemask_epi8(_mm_shuffle_epi32(xcmp, _MM_SHUFFLE(3, 1, 2, 0)));
+    map->cnt++;
+    if (slots) {
+	unsigned slot1 = ctz32(slots);
+	b1 = (slot1 & 4) ? b2 : b1;
+	union bent *be = &b1->be[slot1>>3];
+	be->fptag = fptag, be->pos = pos;
+	return 1;
+    }
+    unsigned mask0 = map->mask0;
+    int maxkick = 2 * map->logsize0;
+    // This entry kicks!
+    __m128i kbe = _mm_cvtsi32_si128(fptag);
+    kbe = _mm_insert_epi32(kbe, pos, 1);
+    do {
+	// This entry is kicked out.
+	__m128i obe = b1->x;
+	i1 ^= b1->be[0].fptag;
+	b1->x = _mm_alignr_epi8(kbe, obe, 8);
+	i1 &= mask0;
+	b1 = &bb[i1];
+	if (b1->be[0].fptag == 0) return _mm_storel_epi64((void *) &b1->be[0], obe), 1;
+	if (b1->be[1].fptag == 0) return _mm_storel_epi64((void *) &b1->be[1], obe), 1;
+	kbe = obe;
+    } while (--maxkick >= 0);
+    return -1;
 }

@@ -26,6 +26,16 @@
 // The inline functions rely heavily on constant propagation.
 #define inline inline __attribute__((always_inline))
 
+union bent {
+    uint64_t u64;
+    struct {
+	uint32_t fptag;
+	uint32_t pos;
+    };
+};
+
+#define BE0 (union bent){0}
+
 // 1 + fp % UINT32_MAX
 static inline uint32_t mod32(uint64_t fp)
 {
@@ -54,6 +64,7 @@ static inline uint32_t mod32(uint64_t fp)
 
 #if defined(__i386__) || defined(__x86_64__)
 unsigned FP47M_FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
+int FP47M_FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
 #endif
 
 #pragma GCC visibility pop
