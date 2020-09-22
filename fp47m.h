@@ -65,6 +65,7 @@ static inline uint32_t mod32(uint64_t fp)
 #if defined(__i386__) || defined(__x86_64__)
 unsigned FP47M_FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
 int FP47M_FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
+void FP47M_FASTCALL fp47m_prefetch2_sse4(uint64_t fp, const struct fp47map *map);
 #endif
 
 #pragma GCC visibility pop
