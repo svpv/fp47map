@@ -216,6 +216,8 @@ static inline unsigned find4(__m128i xtag, __m128i xpos, uint32_t fptag, void *m
 {
     __m128i xcmp = _mm_cmpeq_epi32(xtag, _mm_set1_epi32(fptag));
     unsigned mask = _mm_movemask_ps(_mm_castsi128_ps(xcmp));
+    if (mask == 0)
+	return 0;
     _mm_storeu_si128(mpos, _mm_shuffle_epi8(xpos, lut.leftpack[mask]));
     return popcnt4(mask);
 }
