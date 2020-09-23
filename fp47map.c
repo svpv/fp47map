@@ -165,6 +165,7 @@ struct fp47map *fp47map_new(int logsize)
     map->nstash = 0;
     map->logsize0 = map->logsize1 = logsize;
     map->mask0 = map->mask1 = nb - 1;
+    map->bboff = 0;
 
     setVFuncs(map, 2, 0, 0);
     return map;
@@ -186,7 +187,7 @@ void fp47map_free(struct fp47map *map)
 	    +  (bb[i+3].fptag > 0);
     assert(cnt == map->cnt);
 #endif
-    free(map->bb);
+    free(map->bb - map->bboff);
     free(map);
 }
 

@@ -130,7 +130,7 @@ unsigned FP47M_FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map,
 
 // Turn an array of 2 entries per bucket (buck2) into an array
 // of 4 non-interleaved entries per bucket (buck4).
-static inline void reinterp24(__m128i *bb, size_t nb)
+static inline void reinterp24(__m128i *bb, size_t nb, __m128i *bb4)
 {
     //                       p1b p3b  .  .        .   .   .   .
     //                       t1b t3b  .  .        .   .   .   .
@@ -148,10 +148,10 @@ static inline void reinterp24(__m128i *bb, size_t nb)
 	__m128i t3 = _mm_shuffle_epi8(b3, _mm_setr_epi32(0x03020100, 0x0b0a0908, -1, -1));
 	__m128i p2 = _mm_shuffle_epi8(b2, _mm_setr_epi32(0x07060504, 0x0f0e0d0c, -1, -1));
 	__m128i p3 = _mm_shuffle_epi8(b3, _mm_setr_epi32(0x07060504, 0x0f0e0d0c, -1, -1));
-	bb[2*i-4] = t2;
-	bb[2*i-3] = p2;
-	bb[2*i-2] = t3;
-	bb[2*i-1] = p3;
+	bb4[2*i-4] = t2;
+	bb4[2*i-3] = p2;
+	bb4[2*i-2] = t3;
+	bb4[2*i-1] = p3;
     }
 }
 
@@ -161,13 +161,16 @@ static int FP47M_FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, u
 static inline int insert2tail(struct fp47map *map, __m128i kbe, uint32_t i1)
 {
     size_t nb = map->mask0 + (size_t) 1;
-    struct buck4 *bb = realloc(map->bb, nb * 32);
-    if (!bb)
+    void *mem = realloc(map->bb, nb * 32 + 16);
+    if (!mem)
 	return -1;
-    map->bb = bb;
-    reinterp24(map->bb, nb);
+    // Realign bb to a 32-byte boundary.
+    map->bboff = (uintptr_t) mem & 16;
+    map->bb = mem + map->bboff;
+    reinterp24(mem, nb, map->bb);
     map->bsize = 4;
     // Insert kbe at i1, no kicks required.
+    struct buck4 *bb = map->bb;
     bb[i1].tag[2] = _mm_extract_epi32(kbe, 0);
     bb[i1].pos[2] = _mm_extract_epi32(kbe, 1);
     map->find = fp47m_find4_sse4;
