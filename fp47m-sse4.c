@@ -158,7 +158,7 @@ static inline void reinterp24(__m128i *bb, size_t nb, __m128i *bb4)
 static unsigned FP47M_FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
 static int FP47M_FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
 
-static inline int insert2tail(struct fp47map *map, __m128i kbe, uint32_t i1)
+static inline int insert2tail(struct fp47map *map, uint32_t i1, uint32_t tag, uint32_t pos)
 {
     size_t nb = map->mask0 + (size_t) 1;
     void *mem = realloc(map->bb, nb * 32 + 16);
@@ -171,8 +171,8 @@ static inline int insert2tail(struct fp47map *map, __m128i kbe, uint32_t i1)
     map->bsize = 4;
     // Insert kbe at i1, no kicks required.
     struct buck4 *bb = map->bb;
-    bb[i1].tag[2] = _mm_extract_epi32(kbe, 0);
-    bb[i1].pos[2] = _mm_extract_epi32(kbe, 1);
+    bb[i1].tag[2] = tag;
+    bb[i1].pos[2] = pos;
     map->find = fp47m_find4_sse4;
     map->insert = fp47m_insert4_sse4;
     map->prefetch = fp47m_prefetch4_sse4;
@@ -189,30 +189,34 @@ int FP47M_FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t
     __m128i xcmp = _mm_cmpeq_epi32(_mm_setzero_si128(), xtag);
     unsigned slots = _mm_movemask_epi8(_mm_shuffle_epi32(xcmp, _MM_SHUFFLE(3, 1, 2, 0)));
     map->cnt++;
-    if (slots) {
+    if (likely(slots)) {
 	unsigned slot1 = ctz32(slots);
 	b1 = (slot1 & 4) ? b2 : b1;
 	union bent *be = &b1->be[slot1>>3];
 	be->fptag = fptag, be->pos = pos;
 	return 1;
     }
-    unsigned mask0 = map->mask0;
-    int maxkick = 2 * map->logsize0;
-    // This entry kicks!
-    __m128i kbe = _mm_cvtsi32_si128(fptag);
-    kbe = _mm_insert_epi32(kbe, pos, 1);
-    do {
-	// This entry is kicked out.
-	__m128i obe = b1->x;
-	i1 ^= b1->be[0].fptag;
-	b1->x = _mm_alignr_epi8(kbe, obe, 8);
-	i1 &= mask0;
-	b1 = &bb[i1];
-	if (b1->be[0].fptag == 0) return _mm_storel_epi64((void *) &b1->be[0], obe), 1;
-	if (b1->be[1].fptag == 0) return _mm_storel_epi64((void *) &b1->be[1], obe), 1;
-	kbe = obe;
-    } while (--maxkick >= 0);
-    return insert2tail(map, kbe, i1);
+    if (1) { // check the fill factor
+	unsigned mask0 = map->mask0;
+	int maxkick = 2 * map->logsize0;
+	// This entry kicks!
+	__m128i kbe = _mm_cvtsi32_si128(fptag);
+	kbe = _mm_insert_epi32(kbe, pos, 1);
+	do {
+	    // This entry is kicked out.
+	    __m128i obe = b1->x;
+	    i1 ^= b1->be[0].fptag;
+	    b1->x = _mm_alignr_epi8(kbe, obe, 8);
+	    i1 &= mask0;
+	    b1 = &bb[i1];
+	    if (b1->be[0].fptag == 0) return _mm_storel_epi64((void *) &b1->be[0], obe), 1;
+	    if (b1->be[1].fptag == 0) return _mm_storel_epi64((void *) &b1->be[1], obe), 1;
+	    kbe = obe;
+	} while (--maxkick >= 0);
+	fptag = _mm_cvtsi128_si32(kbe);
+	pos = _mm_extract_epi32(kbe, 1);
+    }
+    return insert2tail(map, i1, fptag, pos);
 }
 
 static inline unsigned find4(__m128i xtag, __m128i xpos, uint32_t fptag, void *mpos)
@@ -241,29 +245,45 @@ static int FP47M_FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, u
     __m128i xcmp2 = _mm_cmpeq_epi32(_mm_setzero_si128(), b2->xtag);
     unsigned slots = _mm_movemask_epi8(_mm_blend_epi16(xcmp1, xcmp2, 0xaa));
     map->cnt++;
-    if (slots) {
+    if (likely(slots)) {
 	unsigned slot1 = ctz32(slots);
 	b1 = (slot1 & 2) ? b2 : b1;
 	b1->tag[slot1>>2] = fptag, b1->pos[slot1>>2] = pos;
 	return 1;
     }
-    unsigned mask0 = map->mask0;
-    int maxkick = 2 * map->logsize0;
-    __m128i ktag = _mm_cvtsi32_si128(fptag);
-    __m128i kpos = _mm_cvtsi32_si128(pos);
-    do {
-	__m128i otag = b1->xtag;
-	__m128i opos = b1->xpos;
-	i1 ^= b1->tag[0];
-	b1->xtag = _mm_alignr_epi8(ktag, otag, 4);
-	b1->xpos = _mm_alignr_epi8(kpos, opos, 4);
-	i1 &= mask0;
-	b1 = &bb[i1];
-	if (b1->tag[0] == 0) return b1->tag[0] = _mm_cvtsi128_si32(otag), b1->pos[0] = _mm_cvtsi128_si32(opos), 1;
-	if (b1->tag[1] == 0) return b1->tag[1] = _mm_cvtsi128_si32(otag), b1->pos[1] = _mm_cvtsi128_si32(opos), 1;
-	if (b1->tag[2] == 0) return b1->tag[2] = _mm_cvtsi128_si32(otag), b1->pos[2] = _mm_cvtsi128_si32(opos), 1;
-	if (b1->tag[3] == 0) return b1->tag[3] = _mm_cvtsi128_si32(otag), b1->pos[3] = _mm_cvtsi128_si32(opos), 1;
-	ktag = otag, kpos = opos;
-    } while (--maxkick >= 0);
-    return -1;
+    if (1) { // check the fill factor
+	unsigned mask0 = map->mask0;
+	int maxkick = 2 * map->logsize0;
+	__m128i ktag = _mm_cvtsi32_si128(fptag);
+	__m128i kpos = _mm_cvtsi32_si128(pos);
+	do {
+	    __m128i otag = b1->xtag;
+	    __m128i opos = b1->xpos;
+	    i1 ^= b1->tag[0];
+	    b1->xtag = _mm_alignr_epi8(ktag, otag, 4);
+	    b1->xpos = _mm_alignr_epi8(kpos, opos, 4);
+	    i1 &= mask0;
+	    b1 = &bb[i1];
+#if 0
+	    if (b1->tag[0] == 0) return b1->tag[0] = _mm_cvtsi128_si32(otag), b1->pos[0] = _mm_cvtsi128_si32(opos), 1;
+	    if (b1->tag[1] == 0) return b1->tag[1] = _mm_cvtsi128_si32(otag), b1->pos[1] = _mm_cvtsi128_si32(opos), 1;
+	    if (b1->tag[2] == 0) return b1->tag[2] = _mm_cvtsi128_si32(otag), b1->pos[2] = _mm_cvtsi128_si32(opos), 1;
+	    if (b1->tag[3] == 0) return b1->tag[3] = _mm_cvtsi128_si32(otag), b1->pos[3] = _mm_cvtsi128_si32(opos), 1;
+#else
+	    __m128i xcmp = _mm_cmpeq_epi32(b1->xtag, _mm_setzero_si128());
+	    unsigned slots = _mm_movemask_epi8(xcmp);
+	    if (slots) {
+		unsigned slot1 = ctz32(slots);
+		b1->tag[slot1>>2] = _mm_cvtsi128_si32(otag);
+		b1->pos[slot1>>2] = _mm_cvtsi128_si32(opos);
+		return 1;
+	    }
+#endif
+	    ktag = otag, kpos = opos;
+	} while (--maxkick >= 0);
+	fptag = _mm_cvtsi128_si32(ktag);
+	pos = _mm_cvtsi128_si32(kpos);
+    }
+#define insert4tail(map, i1, fptag, pos) -1
+    return insert4tail(map, i1, fptag, pos);
 }
