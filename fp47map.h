@@ -22,8 +22,8 @@
 // hash tables.  Internally it manages "bucket entries" of this kind:
 //
 //	struct bent {
-//	    uint32_t pos;   // position
-//	    uint32_t fptag; // fingerprint tag
+//	    uint32_t tag; // fingerprint tag
+//	    uint32_t pos; // position
 //	};
 //
 // These entries associate fingerprints with positions.  A "position" is

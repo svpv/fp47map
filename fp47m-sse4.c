@@ -111,11 +111,11 @@ static void FASTCALL fp47m_prefetch4_sse4(uint64_t fp, const struct fp47map *map
     __builtin_prefetch(&bb[i2]);
 }
 
-static inline unsigned find2(__m128 xb1, __m128 xb2, uint32_t fptag, void *mpos)
+static inline unsigned find2(__m128 xb1, __m128 xb2, uint32_t tag, void *mpos)
 {
     __m128i xtag = _mm_castps_si128(_mm_shuffle_ps(xb1, xb2, _MM_SHUFFLE(2, 0, 2, 0)));
     __m128i xpos = _mm_castps_si128(_mm_shuffle_ps(xb1, xb2, _MM_SHUFFLE(3, 1, 3, 1)));
-    __m128i xcmp = _mm_cmpeq_epi32(xtag, _mm_set1_epi32(fptag));
+    __m128i xcmp = _mm_cmpeq_epi32(xtag, _mm_set1_epi32(tag));
     unsigned mask = _mm_movemask_ps(_mm_castsi128_ps(xcmp));
     _mm_storeu_si128(mpos, _mm_shuffle_epi8(xpos, lut.leftpack[mask]));
     return popcnt4(mask);
@@ -125,7 +125,7 @@ unsigned FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint3
 {
     dFP2I;
     __m128 *bb = map->bb;
-    return find2(bb[i1], bb[i2], fptag, mpos);
+    return find2(bb[i1], bb[i2], tag, mpos);
 }
 
 // Turn an array of 2 entries per bucket (buck2) into an array
@@ -193,35 +193,35 @@ int FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
 	unsigned slot1 = ctz32(slots);
 	b1 = (slot1 & 4) ? b2 : b1;
 	union bent *be = &b1->be[slot1>>3];
-	be->fptag = fptag, be->pos = pos;
+	be->tag = tag, be->pos = pos;
 	return 1;
     }
     if (1) { // check the fill factor
 	unsigned mask0 = map->mask0;
 	int maxkick = 2 * map->logsize0;
 	// This entry kicks!
-	__m128i kbe = _mm_cvtsi32_si128(fptag);
+	__m128i kbe = _mm_cvtsi32_si128(tag);
 	kbe = _mm_insert_epi32(kbe, pos, 1);
 	do {
 	    // This entry is kicked out.
 	    __m128i obe = b1->x;
-	    i1 ^= b1->be[0].fptag;
+	    i1 ^= b1->be[0].tag;
 	    b1->x = _mm_alignr_epi8(kbe, obe, 8);
 	    i1 &= mask0;
 	    b1 = &bb[i1];
-	    if (b1->be[0].fptag == 0) return _mm_storel_epi64((void *) &b1->be[0], obe), 1;
-	    if (b1->be[1].fptag == 0) return _mm_storel_epi64((void *) &b1->be[1], obe), 1;
+	    if (b1->be[0].tag == 0) return _mm_storel_epi64((void *) &b1->be[0], obe), 1;
+	    if (b1->be[1].tag == 0) return _mm_storel_epi64((void *) &b1->be[1], obe), 1;
 	    kbe = obe;
 	} while (--maxkick >= 0);
-	fptag = _mm_cvtsi128_si32(kbe);
+	tag = _mm_cvtsi128_si32(kbe);
 	pos = _mm_extract_epi32(kbe, 1);
     }
-    return insert2tail(map, i1, fptag, pos);
+    return insert2tail(map, i1, tag, pos);
 }
 
-static inline unsigned find4(__m128i xtag, __m128i xpos, uint32_t fptag, void *mpos)
+static inline unsigned find4(__m128i xtag, __m128i xpos, uint32_t tag, void *mpos)
 {
-    __m128i xcmp = _mm_cmpeq_epi32(xtag, _mm_set1_epi32(fptag));
+    __m128i xcmp = _mm_cmpeq_epi32(xtag, _mm_set1_epi32(tag));
     unsigned mask = _mm_movemask_ps(_mm_castsi128_ps(xcmp));
     _mm_storeu_si128(mpos, _mm_shuffle_epi8(xpos, lut.leftpack[mask]));
     return popcnt4(mask);
@@ -231,8 +231,8 @@ static unsigned FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47map *map
 {
     dFP2I;
     struct buck4 *bb = map->bb;
-    unsigned n = find4(bb[i1].xtag, bb[i1].xpos, fptag, mpos);
-    return   n + find4(bb[i2].xtag, bb[i2].xpos, fptag, mpos + n);
+    unsigned n = find4(bb[i1].xtag, bb[i1].xpos, tag, mpos);
+    return   n + find4(bb[i2].xtag, bb[i2].xpos, tag, mpos + n);
 }
 
 static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
@@ -248,13 +248,13 @@ static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_
     if (likely(slots)) {
 	unsigned slot1 = ctz32(slots);
 	b1 = (slot1 & 2) ? b2 : b1;
-	b1->tag[slot1>>2] = fptag, b1->pos[slot1>>2] = pos;
+	b1->tag[slot1>>2] = tag, b1->pos[slot1>>2] = pos;
 	return 1;
     }
     if (1) { // check the fill factor
 	unsigned mask0 = map->mask0;
 	int maxkick = 2 * map->logsize0;
-	__m128i ktag = _mm_cvtsi32_si128(fptag);
+	__m128i ktag = _mm_cvtsi32_si128(tag);
 	__m128i kpos = _mm_cvtsi32_si128(pos);
 	do {
 	    __m128i otag = b1->xtag;
@@ -281,9 +281,9 @@ static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_
 #endif
 	    ktag = otag, kpos = opos;
 	} while (--maxkick >= 0);
-	fptag = _mm_cvtsi128_si32(ktag);
+	tag = _mm_cvtsi128_si32(ktag);
 	pos = _mm_cvtsi128_si32(kpos);
     }
-#define insert4tail(map, i1, fptag, pos) -1
-    return insert4tail(map, i1, fptag, pos);
+#define insert4tail(map, i1, tag, pos) -1
+    return insert4tail(map, i1, tag, pos);
 }

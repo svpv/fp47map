@@ -27,7 +27,7 @@
 
 struct stash {
     union bent be[2];
-    // Since bucket entries are looked up by index+fptag, we also need to
+    // Since bucket entries are looked up by index+tag, we also need to
     // remember the index (there are actually two symmetrical indices and
     // we may store either of them, or possibly the smaller one).
     uint32_t i1[2];
@@ -38,8 +38,8 @@ struct stash {
     if (resized) {				\
 	/* Indices need extra high bits. */	\
 	i1 = (i2 < i1) ? i2 : i1;		\
-	i1 |= fptag << map->logsize0;		\
-	i2 = i1 ^ fptag;			\
+	i1 |= tag << map->logsize0;		\
+	i2 = i1 ^ tag;				\
 	i1 &= map->mask1;			\
 	i2 &= map->mask1;			\
     }						\
@@ -56,22 +56,22 @@ static inline unsigned t_find(const struct fp47map *map, uint64_t fp,
     unsigned n = 0;
     // Check the stash first, unlikely to match.
     struct stash *st = (void *) map->stash;
-    if (nstash > 0 && unlikely(st->be[0].fptag == fptag))
+    if (nstash > 0 && unlikely(st->be[0].tag == tag))
 	if (likely(st->i1[0] == i1 || st->i1[0] == i2))
 	    mpos[n++] = st->be[0].pos;
-    if (nstash > 1 && unlikely(st->be[1].fptag == fptag))
+    if (nstash > 1 && unlikely(st->be[1].tag == tag))
 	if (likely(st->i1[1] == i1 || st->i1[1] == i2))
 	    mpos[n++] = st->be[1].pos;
     // Check the buckets.
     dI2B;
-    if (bsize > 0 && b1[0].fptag == fptag) mpos[n++] = b1[0].pos;
-    if (bsize > 0 && b2[0].fptag == fptag) mpos[n++] = b2[0].pos;
-    if (bsize > 1 && b1[1].fptag == fptag) mpos[n++] = b1[1].pos;
-    if (bsize > 1 && b2[1].fptag == fptag) mpos[n++] = b2[1].pos;
-    if (bsize > 2 && b1[2].fptag == fptag) mpos[n++] = b1[2].pos;
-    if (bsize > 2 && b2[2].fptag == fptag) mpos[n++] = b2[2].pos;
-    if (bsize > 3 && b1[3].fptag == fptag) mpos[n++] = b1[3].pos;
-    if (bsize > 3 && b2[3].fptag == fptag) mpos[n++] = b2[3].pos;
+    if (bsize > 0 && b1[0].tag == tag) mpos[n++] = b1[0].pos;
+    if (bsize > 0 && b2[0].tag == tag) mpos[n++] = b2[0].pos;
+    if (bsize > 1 && b1[1].tag == tag) mpos[n++] = b1[1].pos;
+    if (bsize > 1 && b2[1].tag == tag) mpos[n++] = b2[1].pos;
+    if (bsize > 2 && b1[2].tag == tag) mpos[n++] = b1[2].pos;
+    if (bsize > 2 && b2[2].tag == tag) mpos[n++] = b2[2].pos;
+    if (bsize > 3 && b1[3].tag == tag) mpos[n++] = b1[3].pos;
+    if (bsize > 3 && b2[3].tag == tag) mpos[n++] = b2[3].pos;
     return n;
 }
 
@@ -181,10 +181,10 @@ void fp47map_free(struct fp47map *map)
     union bent *bb = map->bb;
     size_t n = map->bsize * (map->mask1 + (size_t) 1);
     for (size_t i = 0; i < n; i += 4)
-	cnt += (bb[i+0].fptag > 0)
-	    +  (bb[i+1].fptag > 0)
-	    +  (bb[i+2].fptag > 0)
-	    +  (bb[i+3].fptag > 0);
+	cnt += (bb[i+0].tag > 0)
+	    +  (bb[i+1].tag > 0)
+	    +  (bb[i+2].tag > 0)
+	    +  (bb[i+3].tag > 0);
     assert(cnt == map->cnt);
 #endif
     free(map->bb - map->bboff);
@@ -193,14 +193,14 @@ void fp47map_free(struct fp47map *map)
 
 static inline union bent *empty2(union bent *b1, union bent *b2, int bsize)
 {
-    if (bsize > 0 && b1[0].fptag == 0) return &b1[0];
-    if (bsize > 0 && b2[0].fptag == 0) return &b2[0];
-    if (bsize > 1 && b1[1].fptag == 0) return &b1[1];
-    if (bsize > 1 && b2[1].fptag == 0) return &b2[1];
-    if (bsize > 2 && b1[2].fptag == 0) return &b1[2];
-    if (bsize > 2 && b2[2].fptag == 0) return &b2[2];
-    if (bsize > 3 && b1[3].fptag == 0) return &b1[3];
-    if (bsize > 3 && b2[3].fptag == 0) return &b2[3];
+    if (bsize > 0 && b1[0].tag == 0) return &b1[0];
+    if (bsize > 0 && b2[0].tag == 0) return &b2[0];
+    if (bsize > 1 && b1[1].tag == 0) return &b1[1];
+    if (bsize > 1 && b2[1].tag == 0) return &b2[1];
+    if (bsize > 2 && b1[2].tag == 0) return &b1[2];
+    if (bsize > 2 && b2[2].tag == 0) return &b2[2];
+    if (bsize > 3 && b1[3].tag == 0) return &b1[3];
+    if (bsize > 3 && b2[3].tag == 0) return &b2[3];
     return NULL;
 }
 
@@ -218,18 +218,18 @@ static inline bool kickloop(union bent *bb, union bent *b1,
 	b1[bsize-1] = be;
 	// Ponder over the entry that's been kicked out.
 	// Find out the alternative bucket.
-	i1 ^= obe->fptag;
+	i1 ^= obe->tag;
 	i1 &= mask;
 	b1 = bb, b1 += i1 * bsize;
 	// Insert to the alternative bucket.
-	if (bsize > 0 && b1[0].fptag == 0) return b1[0] = *obe, true;
-	if (bsize > 1 && b1[1].fptag == 0) return b1[1] = *obe, true;
-	if (bsize > 2 && b1[2].fptag == 0) return b1[2] = *obe, true;
-	if (bsize > 3 && b1[3].fptag == 0) return b1[3] = *obe, true;
+	if (bsize > 0 && b1[0].tag == 0) return b1[0] = *obe, true;
+	if (bsize > 1 && b1[1].tag == 0) return b1[1] = *obe, true;
+	if (bsize > 2 && b1[2].tag == 0) return b1[2] = *obe, true;
+	if (bsize > 3 && b1[3].tag == 0) return b1[3] = *obe, true;
 	be = *obe;
     } while (--maxkick >= 0);
     // Ran out of tries? obe already set, recover oi1.
-    i1 ^= be.fptag;
+    i1 ^= be.tag;
     i1 &= mask;
     *oi1 = i1;
     return false;
@@ -247,11 +247,11 @@ static inline uint32_t kickback(union bent *bb, union bent be, uint32_t i1,
 	if (bsize > 2) b1[2] = b1[1];
 	if (bsize > 1) b1[1] = b1[0];
 	b1[0] = be;
-	i1 ^= obe.fptag;
+	i1 ^= obe.tag;
 	i1 &= mask;
 	be = obe;
     } while (--maxkick >= 0);
-    return be.fptag;
+    return be.tag;
 }
 
 // TODO: aligned moves
@@ -301,9 +301,9 @@ static inline unsigned restash2(struct fp47map *map,
     unsigned k = 0;
     struct stash *st = (void *) &map->stash;
     for (unsigned j = 0; j < 2; j++) {
-	uint32_t fptag = st->be[j].fptag;
+	uint32_t tag = st->be[j].tag;
 	uint32_t i1 = st->i1[j];
-	uint32_t i2 = i1 ^ fptag;
+	uint32_t i2 = i1 ^ tag;
 	i2 &= map->mask0;
 	dI2B;
 	union bent *be = empty2(b1, b2, bsize);
@@ -326,10 +326,10 @@ static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
     map->cnt++; // strategical bump, may renege
     union bent *be = empty2(b1, b2, bsize);
     if (be) {
-	be->fptag = fptag, be->pos = pos;
+	be->tag = tag, be->pos = pos;
 	return 1;
     }
-    union bent kbe = { .fptag = fptag, .pos = pos };
+    union bent kbe = { .tag = tag, .pos = pos };
     int maxkick = 2 * (resized ? map->logsize1 : map->logsize0);
     uint32_t mask = resized ? map->mask1 : map->mask0;
     if (kickloop(map->bb, b1, kbe, i1, &kbe, &i1, maxkick, mask, bsize))
@@ -345,7 +345,7 @@ static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
     // The 4->3 scenario is the "true resize", quite complex.
     if (bsize == 4) {
 	uint32_t fpout = kickback(map->bb, kbe, i1, maxkick, mask, bsize);
-	assert(fpout == fptag);
+	assert(fpout == tag);
 	return insert4tail(map, fp, pos);
     }
     // With 2->3 and 3->4 though, we just extend the buckets.
@@ -354,7 +354,7 @@ static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
     union bent *bb = realloc(map->bb, nbe * sizeof BE0);
     if (!bb) {
 	uint32_t fpout = kickback(map->bb, kbe, i1, maxkick, mask, bsize);
-	assert(fpout == fptag);
+	assert(fpout == tag);
 	map->cnt--;
 	return -1;
     }
