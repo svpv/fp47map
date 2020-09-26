@@ -85,13 +85,13 @@ static inline void t_prefetch(const struct fp47map *map, uint64_t fp,
 
 // Virtual functions, prototypes for now.
 #define MakeFindVFunc(BS, RE, ST) \
-    static FP47M_FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
+    static FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
 	    const struct fp47map *map, uint32_t *mpos);
 #define MakeInsertVFunc(BS, RE) \
-    static FP47M_FASTCALL int fp47map_insert##BS##re##RE(uint64_t fp, \
+    static FASTCALL int fp47map_insert##BS##re##RE(uint64_t fp, \
 	    struct fp47map *map, uint32_t pos);
 #define MakePrefetchVFunc(BS, RE) \
-    static FP47M_FASTCALL void fp47map_prefetch##BS##re##RE(uint64_t fp, \
+    static FASTCALL void fp47map_prefetch##BS##re##RE(uint64_t fp, \
 	    const struct fp47map *map);
 
 // For the same bucket size, find and insert are placed back to back in memory.
@@ -376,17 +376,17 @@ static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
 // Finally instatntiate virtual functions.
 #undef MakeFindVFunc
 #define MakeFindVFunc(BS, RE, ST) \
-    static FP47M_FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
+    static FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
 	    const struct fp47map *map, uint32_t *mpos) \
     { return t_find(map, fp, mpos, BS, RE, ST); }
 #undef MakeInsertVFunc
 #define MakeInsertVFunc(BS, RE) \
-    static FP47M_FASTCALL int fp47map_insert##BS##re##RE(uint64_t fp, \
+    static FASTCALL int fp47map_insert##BS##re##RE(uint64_t fp, \
 	    struct fp47map *map, uint32_t pos) \
     { return t_insert(map, fp, pos, BS, RE); }
 #undef MakePrefetchVFunc
 #define MakePrefetchVFunc(BS, RE) \
-    static FP47M_FASTCALL void fp47map_prefetch##BS##re##RE(uint64_t fp, \
+    static FASTCALL void fp47map_prefetch##BS##re##RE(uint64_t fp, \
 	    const struct fp47map *map) \
     { t_prefetch(map, fp, BS, RE); }
 MakeAllVFuncs

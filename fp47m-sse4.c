@@ -95,7 +95,7 @@ struct buck4 {
     };
 };
 
-void FP47M_FASTCALL fp47m_prefetch2_sse4(uint64_t fp, const struct fp47map *map)
+void FASTCALL fp47m_prefetch2_sse4(uint64_t fp, const struct fp47map *map)
 {
     dFP2I;
     union buck2 *bb = map->bb;
@@ -103,7 +103,7 @@ void FP47M_FASTCALL fp47m_prefetch2_sse4(uint64_t fp, const struct fp47map *map)
     __builtin_prefetch(&bb[i2]);
 }
 
-static void FP47M_FASTCALL fp47m_prefetch4_sse4(uint64_t fp, const struct fp47map *map)
+static void FASTCALL fp47m_prefetch4_sse4(uint64_t fp, const struct fp47map *map)
 {
     dFP2I;
     struct buck4 *bb = map->bb;
@@ -121,7 +121,7 @@ static inline unsigned find2(__m128 xb1, __m128 xb2, uint32_t fptag, void *mpos)
     return popcnt4(mask);
 }
 
-unsigned FP47M_FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+unsigned FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
 {
     dFP2I;
     __m128 *bb = map->bb;
@@ -155,8 +155,8 @@ static inline void reinterp24(__m128i *bb, size_t nb, __m128i *bb4)
     }
 }
 
-static unsigned FP47M_FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
-static int FP47M_FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
+static unsigned FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
+static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
 
 static inline int insert2tail(struct fp47map *map, uint32_t i1, uint32_t tag, uint32_t pos)
 {
@@ -179,7 +179,7 @@ static inline int insert2tail(struct fp47map *map, uint32_t i1, uint32_t tag, ui
     return 2;
 }
 
-int FP47M_FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
+int FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
 {
     dFP2I;
     union buck2 *bb = map->bb;
@@ -227,7 +227,7 @@ static inline unsigned find4(__m128i xtag, __m128i xpos, uint32_t fptag, void *m
     return popcnt4(mask);
 }
 
-static unsigned FP47M_FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+static unsigned FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
 {
     dFP2I;
     struct buck4 *bb = map->bb;
@@ -235,7 +235,7 @@ static unsigned FP47M_FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47ma
     return   n + find4(bb[i2].xtag, bb[i2].xpos, fptag, mpos + n);
 }
 
-static int FP47M_FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
+static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
 {
     dFP2I;
     struct buck4 *bb = map->bb;

@@ -23,6 +23,8 @@
 #define likely(cond) __builtin_expect(!!(cond), 1)
 #define unlikely(cond) __builtin_expect(cond, 0)
 
+#define FASTCALL FP47M_FASTCALL
+
 // The inline functions rely heavily on constant propagation.
 #define inline inline __attribute__((always_inline))
 
@@ -63,9 +65,9 @@ static inline uint32_t mod32(uint64_t fp)
 #pragma GCC visibility push(hidden)
 
 #if defined(__i386__) || defined(__x86_64__)
-unsigned FP47M_FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
-int FP47M_FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
-void FP47M_FASTCALL fp47m_prefetch2_sse4(uint64_t fp, const struct fp47map *map);
+unsigned FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
+int FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
+void FASTCALL fp47m_prefetch2_sse4(uint64_t fp, const struct fp47map *map);
 #endif
 
 #pragma GCC visibility pop
