@@ -18,11 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#include <stdbool.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
-#include <errno.h>
 #include "fp47m.h"
 
 struct stash {
@@ -35,14 +30,8 @@ struct stash {
 
 // Indices to buckets.
 #define dI2B					\
-    if (resized) {				\
-	/* Indices need extra high bits. */	\
-	i1 = (i2 < i1) ? i2 : i1;		\
-	i1 |= tag << map->logsize0;		\
-	i2 = i1 ^ tag;				\
-	i1 &= map->mask1;			\
-	i2 &= map->mask1;			\
-    }						\
+    if (resized)				\
+	ResizeI;				\
     union bent *b1 = map->bb;			\
     union bent *b2 = map->bb;			\
     b1 += i1 * bsize;				\

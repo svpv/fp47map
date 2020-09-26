@@ -18,6 +18,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <assert.h>
+#include <errno.h>
 #include "fp47map.h"
 
 #define likely(cond) __builtin_expect(!!(cond), 1)
@@ -61,6 +66,16 @@ static inline uint32_t mod32(uint64_t fp)
     uint32_t i2 = i1 ^ tag;			\
     i1 &= map->mask0;				\
     i2 &= map->mask0
+
+// When the table is resized, indexes need extra high bits.
+#define ResizeI					\
+    do {					\
+	i1 = (i2 < i1) ? i2 : i1;		\
+	i1 |= tag << map->logsize0;		\
+	i2 = i1 ^ tag;				\
+	i1 &= map->mask1;			\
+	i2 &= map->mask1;			\
+    } while (0)
 
 #pragma GCC visibility push(hidden)
 

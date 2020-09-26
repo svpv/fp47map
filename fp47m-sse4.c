@@ -111,6 +111,15 @@ static void FASTCALL fp47m_prefetch4_sse4(uint64_t fp, const struct fp47map *map
     __builtin_prefetch(&bb[i2]);
 }
 
+static void FASTCALL fp47m_prefetch4re_sse4(uint64_t fp, const struct fp47map *map)
+{
+    dFP2I;
+    ResizeI;
+    struct buck4 *bb = map->bb;
+    __builtin_prefetch(&bb[i1]);
+    __builtin_prefetch(&bb[i2]);
+}
+
 static inline unsigned find2(__m128 xb1, __m128 xb2, uint32_t tag, void *mpos)
 {
     __m128i xtag = _mm_castps_si128(_mm_shuffle_ps(xb1, xb2, _MM_SHUFFLE(2, 0, 2, 0)));
@@ -235,55 +244,154 @@ static unsigned FASTCALL fp47m_find4_sse4(uint64_t fp, const struct fp47map *map
     return   n + find4(bb[i2].xtag, bb[i2].xpos, tag, mpos + n);
 }
 
-static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
+static unsigned FASTCALL fp47m_find4re_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
 {
     dFP2I;
+    ResizeI;
     struct buck4 *bb = map->bb;
-    struct buck4 *b1 = &bb[i1];
-    struct buck4 *b2 = &bb[i2];
+    unsigned n = find4(bb[i1].xtag, bb[i1].xpos, tag, mpos);
+    return   n + find4(bb[i2].xtag, bb[i2].xpos, tag, mpos + n);
+}
+
+static inline void reinterp44(struct buck4 *bb, size_t nb, struct buck4 *bb4,
+	uint32_t mask0, uint32_t mask1)
+{
+    struct buck4 *bb8 = bb4 + nb;
+    __m128i xmul = _mm_set1_epi32(mask0 + 1);
+    __m128i xmask0 = _mm_set1_epi32(mask0);
+    __m128i xmask1 = _mm_set1_epi32(mask1);
+    for (size_t i = 0; i < nb; i++) {
+	__m128i xtag = bb[i].xtag;
+	__m128i xhi = _mm_mullo_epi32(xtag, xmul);
+	__m128i xi1 = _mm_set1_epi32(i & mask0);
+	__m128i xi2 = _mm_and_si128(_mm_xor_si128(xi1, xtag), xmask0);
+	xi1 = _mm_blendv_epi8(xi1, xi2, _mm_cmpgt_epi32(xi1, xi2));
+	xi1 = _mm_or_si128(xi1, xhi);
+	xi2 = _mm_xor_si128(xi1, xtag);
+	xi1 = _mm_and_si128(xi1, xmask1);
+	xi2 = _mm_and_si128(xi2, xmask1);
+	__m128i xi = _mm_set1_epi32(i);
+	__m128i xeq1 = _mm_cmpeq_epi32(xi1, xi);
+	__m128i xeq2 = _mm_cmpeq_epi32(xi2, xi);
+	__m128i xeq = _mm_or_si128(xeq1, xeq2);
+	unsigned slots4 = _mm_movemask_ps(_mm_castsi128_ps(xeq));
+	unsigned slots8 = ~slots4 & 15;
+	__m128i xpos = bb[i].xpos;
+	bb4[i].xtag = _mm_shuffle_epi8(xtag, lut.leftpack[slots4]);
+	bb8[i].xtag = _mm_shuffle_epi8(xtag, lut.leftpack[slots8]);
+	bb4[i].xpos = _mm_shuffle_epi8(xpos, lut.leftpack[slots4]);
+	bb8[i].xpos = _mm_shuffle_epi8(xpos, lut.leftpack[slots8]);
+    }
+}
+
+static inline bool insert4(struct buck4 *b1, struct buck4 *b2, uint32_t tag, uint32_t pos)
+{
     __m128i xcmp1 = _mm_cmpeq_epi32(_mm_setzero_si128(), b1->xtag);
     __m128i xcmp2 = _mm_cmpeq_epi32(_mm_setzero_si128(), b2->xtag);
     unsigned slots = _mm_movemask_epi8(_mm_blend_epi16(xcmp1, xcmp2, 0xaa));
-    map->cnt++;
     if (likely(slots)) {
 	unsigned slot1 = ctz32(slots);
 	b1 = (slot1 & 2) ? b2 : b1;
-	b1->tag[slot1>>2] = tag, b1->pos[slot1>>2] = pos;
+	b1->tag[slot1>>2] = tag;
+	b1->pos[slot1>>2] = pos;
+	return true;
+    }
+    return false;
+}
+
+static inline bool kickloop4(struct buck4 *bb, struct buck4 *b1,
+	uint32_t *i1, uint32_t *tag, uint32_t *pos, uint32_t mask, int maxkick)
+{
+    __m128i ktag = _mm_cvtsi32_si128(*tag);
+    __m128i kpos = _mm_cvtsi32_si128(*pos);
+#define i1 (*i1)
+    do {
+	__m128i otag = b1->xtag;
+	__m128i opos = b1->xpos;
+	i1 ^= b1->tag[0];
+	b1->xtag = _mm_alignr_epi8(ktag, otag, 4);
+	b1->xpos = _mm_alignr_epi8(kpos, opos, 4);
+	i1 &= mask;
+	b1 = &bb[i1];
+	__m128i xcmp = _mm_cmpeq_epi32(b1->xtag, _mm_setzero_si128());
+	unsigned slots = _mm_movemask_epi8(xcmp);
+	if (likely(slots)) {
+	    unsigned slot1 = ctz32(slots);
+	    b1->tag[slot1>>2] = _mm_cvtsi128_si32(otag);
+	    b1->pos[slot1>>2] = _mm_cvtsi128_si32(opos);
+	    return true;
+	}
+	ktag = otag, kpos = opos;
+    } while (--maxkick >= 0);
+#undef i1
+    *tag = _mm_cvtsi128_si32(ktag);
+    *pos = _mm_cvtsi128_si32(kpos);
+    return false;
+}
+
+static int FASTCALL fp47m_insert4re_sse4(uint64_t fp, struct fp47map *map, uint32_t pos);
+
+static int fp47m_insert4tail_sse4(struct fp47map *map, uint32_t i1, uint32_t tag, uint32_t pos)
+{
+    if (map->logsize1 == 32)
+	return errno = E2BIG, -1;
+    if (map->logsize1 == 26 && sizeof(size_t) < 5)
+	return errno = ENOMEM, -1;
+    size_t nb = map->mask1 + (size_t) 1;
+    void *mem = realloc(map->bb - map->bboff, 2 * nb * 32 + 16);
+    if (!mem)
+	return -1;
+    // XXX Realign bb to a 32-byte boundary.
+    assert(map->bboff == ((uintptr_t) mem & 16));
+    map->bb = mem + map->bboff;
+    map->mask1 = map->mask1 << 1 | 1;
+    map->logsize1++;
+    map->find = fp47m_find4re_sse4;
+    map->insert = fp47m_insert4re_sse4;
+    map->prefetch = fp47m_prefetch4re_sse4;
+    reinterp44(map->bb, nb, map->bb, map->mask0, map->mask1);
+    // Reinsert the stashed entries and the pending entry.
+    for (int j = 0; j < 1; j++) {
+	uint32_t i2 = i1 ^ tag;
+	i1 &= map->mask0;
+	i2 &= map->mask0;
+	ResizeI;
+	struct buck4 *bb = map->bb;
+	struct buck4 *b1 = &bb[i1];
+	if (insert4(b1, &bb[i2], tag, pos))
+	    continue;
+	if (kickloop4(bb, b1, &i1, &tag, &pos, map->mask1, 2 * map->logsize1))
+	    continue;
+	return -1;
+    }
+    return 2;
+}
+
+static inline int insert4tmpl(struct fp47map *map, uint64_t fp, uint32_t pos, bool re)
+{
+    dFP2I;
+    if (re)
+	ResizeI;
+    struct buck4 *bb = map->bb;
+    struct buck4 *b1 = &bb[i1];
+    map->cnt++;
+    if (insert4(b1, &bb[i2], tag, pos))
 	return 1;
-    }
     if (1) { // check the fill factor
-	unsigned mask0 = map->mask0;
-	int maxkick = 2 * map->logsize0;
-	__m128i ktag = _mm_cvtsi32_si128(tag);
-	__m128i kpos = _mm_cvtsi32_si128(pos);
-	do {
-	    __m128i otag = b1->xtag;
-	    __m128i opos = b1->xpos;
-	    i1 ^= b1->tag[0];
-	    b1->xtag = _mm_alignr_epi8(ktag, otag, 4);
-	    b1->xpos = _mm_alignr_epi8(kpos, opos, 4);
-	    i1 &= mask0;
-	    b1 = &bb[i1];
-#if 0
-	    if (b1->tag[0] == 0) return b1->tag[0] = _mm_cvtsi128_si32(otag), b1->pos[0] = _mm_cvtsi128_si32(opos), 1;
-	    if (b1->tag[1] == 0) return b1->tag[1] = _mm_cvtsi128_si32(otag), b1->pos[1] = _mm_cvtsi128_si32(opos), 1;
-	    if (b1->tag[2] == 0) return b1->tag[2] = _mm_cvtsi128_si32(otag), b1->pos[2] = _mm_cvtsi128_si32(opos), 1;
-	    if (b1->tag[3] == 0) return b1->tag[3] = _mm_cvtsi128_si32(otag), b1->pos[3] = _mm_cvtsi128_si32(opos), 1;
-#else
-	    __m128i xcmp = _mm_cmpeq_epi32(b1->xtag, _mm_setzero_si128());
-	    unsigned slots = _mm_movemask_epi8(xcmp);
-	    if (slots) {
-		unsigned slot1 = ctz32(slots);
-		b1->tag[slot1>>2] = _mm_cvtsi128_si32(otag);
-		b1->pos[slot1>>2] = _mm_cvtsi128_si32(opos);
-		return 1;
-	    }
-#endif
-	    ktag = otag, kpos = opos;
-	} while (--maxkick >= 0);
-	tag = _mm_cvtsi128_si32(ktag);
-	pos = _mm_cvtsi128_si32(kpos);
+	unsigned mask = re ? map->mask1 : map->mask0;
+	int logsize = re ? map->logsize1 : map->logsize0;
+	if (kickloop4(bb, b1, &i1, &tag, &pos, mask, 2 * logsize))
+	    return 1;
     }
-#define insert4tail(map, i1, tag, pos) -1
-    return insert4tail(map, i1, tag, pos);
+    return fp47m_insert4tail_sse4(map, i1, tag, pos);
+}
+
+static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
+{
+    return insert4tmpl(map, fp, pos, 0);
+}
+
+static int FASTCALL fp47m_insert4re_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
+{
+    return insert4tmpl(map, fp, pos, 1);
 }
