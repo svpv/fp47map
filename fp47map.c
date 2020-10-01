@@ -224,25 +224,6 @@ static inline bool kickloop(union bent *bb, union bent *b1,
     return false;
 }
 
-// When kickloop fails, we may need to revert the buckets to the original
-// state.  So we just insert the kicked-out entry in the reverse direction.
-static inline uint32_t kickback(union bent *bb, union bent be, uint32_t i1,
-	int maxkick, uint32_t mask, int bsize)
-{
-    do {
-	union bent *b1 = bb; b1 += i1 * bsize;
-	union bent obe = b1[bsize-1];
-	if (bsize > 3) b1[3] = b1[2];
-	if (bsize > 2) b1[2] = b1[1];
-	if (bsize > 1) b1[1] = b1[0];
-	b1[0] = be;
-	i1 ^= obe.tag;
-	i1 &= mask;
-	be = obe;
-    } while (--maxkick >= 0);
-    return be.tag;
-}
-
 // TODO: aligned moves
 #define A16(p) (p)
 
@@ -342,8 +323,6 @@ static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
     size_t nbe = (bsize + 1) * nb;
     union bent *bb = realloc(map->bb, nbe * sizeof BE0);
     if (!bb) {
-	uint32_t fpout = kickback(map->bb, kbe, i1, maxkick, mask, bsize);
-	assert(fpout == tag);
 	map->cnt--;
 	return -1;
     }
