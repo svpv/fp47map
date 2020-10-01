@@ -66,7 +66,7 @@ void fp47map_free(struct fp47map *map);
 
 // Since the buckets are fixed-size, the map guarantees O(1) worst-case lookup.
 // Use FP47MAP_MAXFIND to specify the array size for fp47map_find().
-#define FP47MAP_MAXFIND 10
+#define FP47MAP_MAXFIND 12
 
 #if defined(__i386__) && !defined(_WIN32) && !defined(__CYGWIN__)
 #define FP47M_FASTCALL __attribute__((regparm(3)))
@@ -78,8 +78,8 @@ void fp47map_free(struct fp47map *map);
 struct fp47map {
     // To reduce the failure rate, one or two bucket entries can be stashed.
     // There are some details which we do not disclose in this header file.
-    // This guy goes first and gets the best alignment (the same as buckets).
-    unsigned char stash[24];
+    // This guy goes first and gets the best alignment (for SIMD loads).
+    unsigned char stash[48];
     // Virtual functions, depend on the bucket size, switched on resize.
     // Pass fp arg first, eax:edx may hold hash() return value.
     unsigned (FP47M_FASTCALL *find)(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
