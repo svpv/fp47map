@@ -128,8 +128,7 @@ static void FASTCALL fp47m_prefetch4_sse4(uint64_t fp, const struct fp47map *map
 
 static void FASTCALL fp47m_prefetch4re_sse4(uint64_t fp, const struct fp47map *map)
 {
-    dFP2I;
-    ResizeI;
+    dFP2I; ResizeI;
     struct buck4 *bb = map->bb;
     __builtin_prefetch(&bb[i1]);
     __builtin_prefetch(&bb[i2]);
@@ -229,8 +228,7 @@ static unsigned FASTCALL fp47m_find4st4_sse4(uint64_t fp, const struct fp47map *
 
 static unsigned FASTCALL fp47m_find4re_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
 {
-    dFP2I;
-    ResizeI;
+    dFP2I; ResizeI;
     struct buck4 *bb = map->bb;
     unsigned n = find4(bb[i1].xtag, bb[i1].xpos, tag, mpos);
     return   n + find4(bb[i2].xtag, bb[i2].xpos, tag, mpos + n);
@@ -238,8 +236,7 @@ static unsigned FASTCALL fp47m_find4re_sse4(uint64_t fp, const struct fp47map *m
 
 static unsigned FASTCALL fp47m_find4st1re_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
 {
-    dFP2I;
-    ResizeI;
+    dFP2I; ResizeI;
     struct buck4 *bb = map->bb;
     unsigned n = find4(bb[i1].xtag, bb[i1].xpos, tag, mpos);
     n += find4(bb[i2].xtag, bb[i2].xpos, tag, mpos + n);
@@ -248,8 +245,7 @@ static unsigned FASTCALL fp47m_find4st1re_sse4(uint64_t fp, const struct fp47map
 
 static unsigned FASTCALL fp47m_find4st4re_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
 {
-    dFP2I;
-    ResizeI;
+    dFP2I; ResizeI;
     struct buck4 *bb = map->bb;
     unsigned n = find4(bb[i1].xtag, bb[i1].xpos, tag, mpos);
     n += find4(bb[i2].xtag, bb[i2].xpos, tag, mpos + n);
@@ -513,10 +509,8 @@ static inline int resize2(struct fp47map *map, uint32_t i1, uint32_t tag, uint32
 
 static int fp47m_resize4_sse4(struct fp47map *map, uint32_t i1, uint32_t tag, uint32_t pos)
 {
-    if (map->logsize1 == 32)
-	return errno = E2BIG, -1;
-    if (map->logsize1 == 26 && sizeof(size_t) < 5)
-	return errno = ENOMEM, -1;
+    if (map->logsize1 == ((sizeof(size_t) < 5) ? 26 : 32))
+	return -2;
     size_t nb = map->mask1 + (size_t) 1;
     void *mem = realloc(map->bb - map->bboff, 2 * nb * 32 + 16);
     if (!mem)
@@ -579,8 +573,7 @@ static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_
 
 static int FASTCALL fp47m_insert4re_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
 {
-    dFP2I;
-    ResizeI;
+    dFP2I; ResizeI;
     struct buck4 *bb = map->bb;
     struct buck4 *b1 = &bb[i1];
     map->cnt++;

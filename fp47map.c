@@ -1,4 +1,4 @@
-// Copyright (c) 2017, 2018, 2019 Alexey Tourbin
+// Copyright (c) 2017, 2018, 2019, 2020 Alexey Tourbin
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,122 +20,15 @@
 
 #include "fp47m.h"
 
-struct stash {
-    union bent be[2];
-    // Since bucket entries are looked up by index+tag, we also need to
-    // remember the index (there are actually two symmetrical indices and
-    // we may store either of them, or possibly the smaller one).
-    uint32_t i1[2];
-};
-
-// Indices to buckets.
-#define dI2B					\
-    if (resized)				\
-	ResizeI;				\
-    union bent *b1 = map->bb;			\
-    union bent *b2 = map->bb;			\
-    b1 += i1 * bsize;				\
-    b2 += i2 * bsize
-
-// Template for map->find virtual functions.
-static inline unsigned t_find(const struct fp47map *map, uint64_t fp,
-	uint32_t *mpos, int bsize, bool resized, int nstash)
-{
-    dFP2I;
-    unsigned n = 0;
-    // Check the stash first, unlikely to match.
-    struct stash *st = (void *) map->stash;
-    if (nstash > 0 && unlikely(st->be[0].tag == tag))
-	if (likely(st->i1[0] == i1 || st->i1[0] == i2))
-	    mpos[n++] = st->be[0].pos;
-    if (nstash > 1 && unlikely(st->be[1].tag == tag))
-	if (likely(st->i1[1] == i1 || st->i1[1] == i2))
-	    mpos[n++] = st->be[1].pos;
-    // Check the buckets.
-    dI2B;
-    if (bsize > 0 && b1[0].tag == tag) mpos[n++] = b1[0].pos;
-    if (bsize > 0 && b2[0].tag == tag) mpos[n++] = b2[0].pos;
-    if (bsize > 1 && b1[1].tag == tag) mpos[n++] = b1[1].pos;
-    if (bsize > 1 && b2[1].tag == tag) mpos[n++] = b2[1].pos;
-    if (bsize > 2 && b1[2].tag == tag) mpos[n++] = b1[2].pos;
-    if (bsize > 2 && b2[2].tag == tag) mpos[n++] = b2[2].pos;
-    if (bsize > 3 && b1[3].tag == tag) mpos[n++] = b1[3].pos;
-    if (bsize > 3 && b2[3].tag == tag) mpos[n++] = b2[3].pos;
-    return n;
-}
-
-static inline void t_prefetch(const struct fp47map *map, uint64_t fp,
-      int bsize, int resized)
-{
-    dFP2I; dI2B;
-    __builtin_prefetch(b1);
-    __builtin_prefetch(b2);
-}
-
-// Virtual functions, prototypes for now.
-#define MakeFindVFunc(BS, RE, ST) \
-    static FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
-	    const struct fp47map *map, uint32_t *mpos);
-#define MakeInsertVFunc(BS, RE) \
-    static FASTCALL int fp47map_insert##BS##re##RE(uint64_t fp, \
-	    struct fp47map *map, uint32_t pos);
-#define MakePrefetchVFunc(BS, RE) \
-    static FASTCALL void fp47map_prefetch##BS##re##RE(uint64_t fp, \
-	    const struct fp47map *map);
-
-// For the same bucket size, find and insert are placed back to back in memory.
-// This should spare us some L1i cache misses.
-#define MakeVFuncs(BS, RE) \
-    MakePrefetchVFunc(BS, RE) \
-    MakeFindVFunc(BS, RE, 0) \
-    MakeInsertVFunc(BS, RE) \
-    MakeFindVFunc(BS, RE, 1) \
-    MakeFindVFunc(BS, RE, 2)
-
-// There are no resized function for bsize == 2, becuase we first go 2->3->4,
-// then double the number of buckets for 4->3 and then go 3->4 again.
-#define MakeAllVFuncs \
-    MakeVFuncs(2, 0) \
-    MakeVFuncs(3, 0) MakeVFuncs(4, 0) \
-    MakeVFuncs(3, 1) MakeVFuncs(4, 1)
-MakeAllVFuncs
-
-// When BS and RE are literals.
-#define setVFuncsA(map, BS, RE, ST)			\
-    map->find =						\
-	(ST == 0) ? fp47map_find##BS##re##RE##st0 :	\
-	(ST == 1) ? fp47map_find##BS##re##RE##st1 :	\
-		    fp47map_find##BS##re##RE##st2 ,	\
-    map->insert =   fp47map_insert##BS##re##RE    ,	\
-    map->prefetch = fp47map_prefetch##BS##re##RE
-
-static inline void setVFuncs(struct fp47map *map, int bsize, bool resized, int nstash)
-{
-    if (bsize == 2) {
-	if (resized) assert(0);
-	else         setVFuncsA(map, 2, 0, nstash);
-    }
-    if (bsize == 3) {
-	if (resized) setVFuncsA(map, 3, 1, nstash);
-	else         setVFuncsA(map, 3, 0, nstash);
-    }
-    if (bsize == 4) {
-	if (resized) setVFuncsA(map, 4, 1, nstash);
-	else         setVFuncsA(map, 4, 0, nstash);
-    }
-}
-
 struct fp47map *fp47map_new(int logsize)
 {
     assert(logsize >= 0);
     if (logsize < 4)
 	logsize = 4;
     // The ultimate limit imposed by the hashing scheme is 2^32 buckets.
-    if (logsize > 32)
-	return errno = E2BIG, NULL;
     // The limit on 32-bit platforms is 2GB, logsize=28 allocates 4GB.
-    if (logsize > 27 && sizeof(size_t) < 5)
-	return errno = ENOMEM, NULL;
+    if (logsize > ((sizeof(size_t) < 5) ? 27 : 32))
+	return NULL;
 
     // Starting with two slots per bucket.
     size_t nb = (size_t) 1 << logsize;
@@ -156,7 +49,19 @@ struct fp47map *fp47map_new(int logsize)
     map->mask0 = map->mask1 = nb - 1;
     map->bboff = 0;
 
-    setVFuncs(map, 2, 0, 0);
+#if defined(__i386__) || defined(__x86_64__)
+    if (__builtin_cpu_supports("sse4.1") && __builtin_cpu_supports("popcnt")) {
+	map->find = fp47m_find2_sse4;
+	map->insert = fp47m_insert2_sse4;
+	map->prefetch = fp47m_prefetch2_sse4;
+    }
+    else
+#endif
+    {
+	map->find = fp47m_find2;
+	map->insert = fp47m_insert2;
+	map->prefetch = fp47m_prefetch2;
+    }
     return map;
 }
 
@@ -164,38 +69,164 @@ void fp47map_free(struct fp47map *map)
 {
     if (!map)
 	return;
-#ifdef FP47MAP_DEBUG
-    // The number of entries must match the occupied slots.
-    size_t cnt = 0;
-    union bent *bb = map->bb;
-    size_t n = map->bsize * (map->mask1 + (size_t) 1);
-    for (size_t i = 0; i < n; i += 4)
-	cnt += (bb[i+0].tag > 0)
-	    +  (bb[i+1].tag > 0)
-	    +  (bb[i+2].tag > 0)
-	    +  (bb[i+3].tag > 0);
-    assert(cnt == map->cnt);
-#endif
     free(map->bb - map->bboff);
     free(map);
 }
 
-static inline union bent *empty2(union bent *b1, union bent *b2, int bsize)
+struct stash {
+    // Since bucket entries are looked up by index+tag, we also need to
+    // remember the index (there are actually two symmetrical indices and
+    // we may store either of them, or possibly the smaller one).
+    uint32_t i1[4];
+    union bent be[4];
+};
+
+void FASTCALL fp47m_prefetch2(uint64_t fp, const struct fp47map *map)
 {
-    if (bsize > 0 && b1[0].tag == 0) return &b1[0];
-    if (bsize > 0 && b2[0].tag == 0) return &b2[0];
-    if (bsize > 1 && b1[1].tag == 0) return &b1[1];
-    if (bsize > 1 && b2[1].tag == 0) return &b2[1];
-    if (bsize > 2 && b1[2].tag == 0) return &b1[2];
-    if (bsize > 2 && b2[2].tag == 0) return &b2[2];
-    if (bsize > 3 && b1[3].tag == 0) return &b1[3];
-    if (bsize > 3 && b2[3].tag == 0) return &b2[3];
-    return NULL;
+    dFP2I;
+    union bent *bb = map->bb;
+    __builtin_prefetch(bb + 2 * i1);
+    __builtin_prefetch(bb + 2 * i2);
 }
 
-static inline bool kickloop(union bent *bb, union bent *b1,
-	union bent be, uint32_t i1, union bent *obe, uint32_t *oi1,
-	int maxkick, uint32_t mask, int bsize)
+static void FASTCALL fp47m_prefetch4(uint64_t fp, const struct fp47map *map)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    __builtin_prefetch(bb + 4 * i1);
+    __builtin_prefetch(bb + 4 * i2);
+}
+
+static void FASTCALL fp47m_prefetch4re(uint64_t fp, const struct fp47map *map)
+{
+    dFP2I; ResizeI;
+    union bent *bb = map->bb;
+    __builtin_prefetch(bb + 4 * i1);
+    __builtin_prefetch(bb + 4 * i2);
+}
+
+static inline unsigned find(int bsize, union bent *b1, union bent *b2, uint32_t tag, uint32_t *mpos)
+{
+    unsigned n = 0;
+    if (bsize > 0 && unlikely(b1[0].tag == tag)) mpos[n++] = b1[0].pos;
+    if (bsize > 0 && unlikely(b2[0].tag == tag)) mpos[n++] = b2[0].pos;
+    if (bsize > 1 && unlikely(b1[1].tag == tag)) mpos[n++] = b1[1].pos;
+    if (bsize > 1 && unlikely(b2[1].tag == tag)) mpos[n++] = b2[1].pos;
+    if (bsize > 2 && unlikely(b1[2].tag == tag)) mpos[n++] = b1[2].pos;
+    if (bsize > 2 && unlikely(b2[2].tag == tag)) mpos[n++] = b2[2].pos;
+    if (bsize > 3 && unlikely(b1[3].tag == tag)) mpos[n++] = b1[3].pos;
+    if (bsize > 3 && unlikely(b2[3].tag == tag)) mpos[n++] = b2[3].pos;
+    return n;
+}
+
+#define FindSt1(j)						\
+    do {							\
+	const struct stash *st = (const void *) map->stash;	\
+	if (likely(st->be[j].tag != tag))			\
+	    break;						\
+	if (unlikely(st->i1[j] != i1))				\
+	    break;						\
+	*mpos = st->be[j].pos;					\
+	n += 1;							\
+    } while (0)
+
+unsigned FASTCALL fp47m_find2(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    return find(2, bb + 2 * i1, bb + 2 * i2, tag, mpos);
+}
+
+static unsigned FASTCALL fp47m_find2st1(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    unsigned n = find(2, bb + 2 * i1, bb + 2 * i2, tag, mpos);
+    i1 = (i1 < i2) ? i1 : i2;
+    FindSt1(0);
+    return n;
+}
+
+static unsigned FASTCALL fp47m_find2st4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    unsigned n = find(2, bb + 2 * i1, bb + 2 * i2, tag, mpos);
+    i1 = (i1 < i2) ? i1 : i2;
+    FindSt1(0); FindSt1(1); FindSt1(2); FindSt1(3);
+    return n;
+}
+
+static unsigned FASTCALL fp47m_find4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    return find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
+}
+
+static unsigned FASTCALL fp47m_find4st1(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    unsigned n = find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
+    i1 = (i1 < i2) ? i1 : i2;
+    FindSt1(0);
+    return n;
+}
+
+static unsigned FASTCALL fp47m_find4st4(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    unsigned n = find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
+    i1 = (i1 < i2) ? i1 : i2;
+    FindSt1(0); FindSt1(1); FindSt1(2); FindSt1(3);
+    return n;
+}
+
+static unsigned FASTCALL fp47m_find4re(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I; ResizeI;
+    union bent *bb = map->bb;
+    return find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
+}
+
+static unsigned FASTCALL fp47m_find4st1re(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I; ResizeI;
+    union bent *bb = map->bb;
+    unsigned n = find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
+    i1 = (i1 < i2) ? i1 : i2;
+    FindSt1(0);
+    return n;
+}
+
+static unsigned FASTCALL fp47m_find4st4re(uint64_t fp, const struct fp47map *map, uint32_t *mpos)
+{
+    dFP2I; ResizeI;
+    union bent *bb = map->bb;
+    unsigned n = find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
+    i1 = (i1 < i2) ? i1 : i2;
+    FindSt1(0); FindSt1(1); FindSt1(2); FindSt1(3);
+    return n;
+}
+
+static inline bool insert(int bsize, union bent *b1, union bent *b2, union bent kbe)
+{
+    if (bsize > 0 && b1[0].tag == 0) return b1[0] = kbe, true;
+    if (bsize > 0 && b2[0].tag == 0) return b2[0] = kbe, true;
+    if (bsize > 1 && b1[1].tag == 0) return b1[1] = kbe, true;
+    if (bsize > 1 && b2[1].tag == 0) return b2[1] = kbe, true;
+    if (bsize > 2 && b1[2].tag == 0) return b1[2] = kbe, true;
+    if (bsize > 2 && b2[2].tag == 0) return b2[2] = kbe, true;
+    if (bsize > 3 && b1[3].tag == 0) return b1[3] = kbe, true;
+    if (bsize > 3 && b2[3].tag == 0) return b2[3] = kbe, true;
+    return false;
+}
+
+static inline bool kickloop(int bsize, union bent *bb, union bent *b1,
+	uint32_t i1, union bent be, uint32_t *oi1, union bent *obe,
+	uint32_t mask, int maxkick)
 {
     do {
 	// Put at the top, kick out from the bottom.
@@ -209,7 +240,7 @@ static inline bool kickloop(union bent *bb, union bent *b1,
 	// Find out the alternative bucket.
 	i1 ^= obe->tag;
 	i1 &= mask;
-	b1 = bb, b1 += i1 * bsize;
+	b1 = bb + i1 * bsize;
 	// Insert to the alternative bucket.
 	if (bsize > 0 && b1[0].tag == 0) return b1[0] = *obe, true;
 	if (bsize > 1 && b1[1].tag == 0) return b1[1] = *obe, true;
@@ -217,144 +248,256 @@ static inline bool kickloop(union bent *bb, union bent *b1,
 	if (bsize > 3 && b1[3].tag == 0) return b1[3] = *obe, true;
 	be = *obe;
     } while (--maxkick >= 0);
-    // Ran out of tries? obe already set, recover oi1.
-    i1 ^= be.tag;
-    i1 &= mask;
+    // Ran out of tries? obe already set.
     *oi1 = i1;
     return false;
 }
 
-// TODO: aligned moves
-#define A16(p) (p)
-
-#define COPY2(dst, src) memcpy(dst, src, 2 * sizeof BE0)
-
-static inline void reinterp23(union bent *bb, size_t nb)
+static inline bool putstash(struct fp47map *map, uint32_t i1, union bent kbe,
+	unsigned (FASTCALL *find_st1)(uint64_t fp, const struct fp47map *map, uint32_t *mpos),
+	unsigned (FASTCALL *find_st4)(uint64_t fp, const struct fp47map *map, uint32_t *mpos))
 {
-    // Reinterpret as a 3-tier array.
-    //
-    //             2 3 . .   . . . .
-    //   1 2 3 4   1 3 4 .   1 2 3 4
-    //   1 2 3 4   1 2 4 .   1 2 3 4
-
-    for (size_t i = nb - 2; i; i -= 2) {
-	union bent *src0 = bb + 2 * i, *src1 = src0 + 2;
-	union bent *dst0 = bb + 3 * i, *dst1 = dst0 + 3;
-	COPY2(    dst1 , A16(src1)); dst1[2] = BE0;
-	COPY2(A16(dst0), A16(src0)); dst0[2] = BE0;
-    }
-    bb[5] = BE0, bb[4] = bb[3], bb[3] = bb[2], bb[2] = BE0;
-}
-
-static inline void reinterp34(union bent *bb, size_t nb)
-{
-    // Reinterpret as a 4-tier array.
-    //
-    //             2 3 4 .   . . . .
-    //   1 2 3 4   1 3 4 .   1 2 3 4
-    //   1 2 3 4   1 2 4 .   1 2 3 4
-    //   1 2 3 4   1 2 3 .   1 2 3 4
-
-    for (size_t i = nb - 2; i; i -= 2) {
-	union bent *src0 = bb + 3 * i, *src1 = src0 + 3;
-	union bent *dst0 = bb + 4 * i, *dst1 = dst0 + 4;
-	dst1[2] = src1[2]; COPY2(A16(dst1),     src1 ); dst1[3] = BE0;
-	dst0[2] = src0[2]; COPY2(A16(dst0), A16(src0)); dst0[3] = BE0;
-    }
-    bb[7] = BE0, bb[6] = bb[5], bb[5] = bb[4], bb[4] = bb[3], bb[3] = BE0;
-}
-
-// After the table gets resized, we try to reinsert the stashed elements.
-static inline unsigned restash2(struct fp47map *map,
-	int maxkick, uint32_t mask, int bsize, bool resized)
-{
-    unsigned k = 0;
     struct stash *st = (void *) &map->stash;
-    for (unsigned j = 0; j < 2; j++) {
-	uint32_t tag = st->be[j].tag;
-	uint32_t i1 = st->i1[j];
-	uint32_t i2 = i1 ^ tag;
-	i2 &= map->mask0;
-	dI2B;
-	union bent *be = empty2(b1, b2, bsize);
-	if (be) {
-	    *be = st->be[j];
-	    continue;
-	}
-	if (kickloop(map->bb, b1, st->be[j], i1, &st->be[k], &i1, maxkick, mask, bsize))
-	    continue;
-	// An entry from i1 has landed into st->be[k].
-	st->i1[k++] = i1;
+    if (likely(map->nstash == 0)) {
+	st->i1[0] = i1;
+	st->be[0] = kbe;
+	st->i1[1] = st->i1[2] = st->i1[3] = 0;
+	st->be[1] = st->be[2] = st->be[3] = BE0;
+	map->find = find_st1;
+	map->nstash = 1, map->cnt--;
+	return true;
     }
-    return k;
-}
-
-static inline int t_insert(struct fp47map *map, uint64_t fp, uint32_t pos,
-	int bsize, bool resized)
-{
-    dFP2I; dI2B;
-    map->cnt++; // strategical bump, may renege
-    union bent *be = empty2(b1, b2, bsize);
-    if (be) {
-	be->tag = tag, be->pos = pos;
-	return 1;
-    }
-    union bent kbe = { .tag = tag, .pos = pos };
-    int maxkick = 2 * (resized ? map->logsize1 : map->logsize0);
-    uint32_t mask = resized ? map->mask1 : map->mask0;
-    if (kickloop(map->bb, b1, kbe, i1, &kbe, &i1, maxkick, mask, bsize))
-	return 1;
-    if (map->nstash < 2) {
-	struct stash *st = (void *) &map->stash;
-	st->be[map->nstash] = kbe;
+    if (likely(map->nstash < 4)) {
 	st->i1[map->nstash] = i1;
+	st->be[map->nstash] = kbe;
+	map->find = find_st4;
 	map->nstash++, map->cnt--;
-	setVFuncs(map, bsize, resized, map->nstash);
-	return 1;
+	return true;
     }
-    // The 4->3 scenario is the "true resize", quite complex.
-    if (bsize == 4) {
-	uint32_t fpout = kickback(map->bb, kbe, i1, maxkick, mask, bsize);
-	assert(fpout == tag);
-	return insert4tail(map, fp, pos);
-    }
-    // With 2->3 and 3->4 though, we just extend the buckets.
-    size_t nb = mask + (size_t) 1;
-    size_t nbe = (bsize + 1) * nb;
-    union bent *bb = realloc(map->bb, nbe * sizeof BE0);
-    if (!bb) {
-	map->cnt--;
-	return -1;
-    }
-    if (bsize == 2) reinterp23(bb, nb);
-    if (bsize == 3) reinterp34(bb, nb);
-    map->bb = bb;
-    map->bsize = bsize + 1;
-    b1 = bb + i1 * (bsize + 1);
-    // Insert kbe at i1, no kicks required.
-    b1[bsize] = kbe;
-    // Reinsert the stashed elements.
-    map->cnt += map->nstash;
-    map->nstash = restash2(map, maxkick, mask, bsize + 1, resized);
-    map->cnt -= map->nstash;
-    setVFuncs(map, bsize + 1, resized, map->nstash);
-    return 2;
+    return false;
 }
 
-// Finally instatntiate virtual functions.
-#undef MakeFindVFunc
-#define MakeFindVFunc(BS, RE, ST) \
-    static FASTCALL unsigned fp47map_find##BS##re##RE##st##ST(uint64_t fp, \
-	    const struct fp47map *map, uint32_t *mpos) \
-    { return t_find(map, fp, mpos, BS, RE, ST); }
-#undef MakeInsertVFunc
-#define MakeInsertVFunc(BS, RE) \
-    static FASTCALL int fp47map_insert##BS##re##RE(uint64_t fp, \
-	    struct fp47map *map, uint32_t pos) \
-    { return t_insert(map, fp, pos, BS, RE); }
-#undef MakePrefetchVFunc
-#define MakePrefetchVFunc(BS, RE) \
-    static FASTCALL void fp47map_prefetch##BS##re##RE(uint64_t fp, \
-	    const struct fp47map *map) \
-    { t_prefetch(map, fp, BS, RE); }
-MakeAllVFuncs
+#define A16(p) __builtin_assume_aligned(p, 16)
+
+static inline void reinterp24(union bent *bb, size_t nb, union bent *bb4)
+{
+    for (size_t i = nb - 2; i; i -= 2) {
+	union bent *b2 = bb  + 2 * i;
+	union bent *b4 = bb4 + 4 * i;
+	memcpy(A16(b4 + 0), A16(b2 + 0), 16);
+	memcpy(A16(b4 + 4), A16(b2 + 2), 16);
+	memset(A16(b4 + 2), 0, 16);
+	memset(A16(b4 + 6), 0, 16);
+    }
+    uint64_t be0[2], be1[2];
+    memcpy(&be0, A16(bb + 0), 16);
+    memcpy(&be1, A16(bb + 2), 16);
+    memcpy(A16(bb4 + 0), &be0, 16);
+    memcpy(A16(bb4 + 4), &be1, 16);
+    memset(A16(bb4 + 2), 0, 16);
+    memset(A16(bb4 + 6), 0, 16);
+}
+
+static inline void reinterp44(union bent *bb, size_t nb, union bent *bb4,
+	uint32_t mask0, uint32_t mask1, int logsize0)
+{
+    union bent *bb8 = bb4 + 4 * nb;
+    for (size_t i = 0; i < nb; i++) {
+	union bent b[4];
+	memcpy(b, A16(bb + 4 * i), 32);
+	memset(A16(bb4 + 4 * i), 0, 32);
+	memset(A16(bb8 + 4 * i), 0, 32);
+	unsigned j4 = 0, j8 = 0;
+	for (unsigned j = 0; j < 4; j++) {
+	    uint32_t tag = b[j].tag;
+	    uint32_t i1 = i;
+	    uint32_t i2 = i ^ tag;
+	    i1 &= mask0, i2 &= mask0;
+	    i1 = (i1 < i2) ? i1 : i2;
+	    i1 |= tag << logsize0;
+	    i2 = i1 ^ tag;
+	    i1 &= mask1, i2 &= mask1;
+	    union bent *b1 = bb4 + 4 * i;
+	    unsigned j1 = j4;
+	    unsigned eq = (i == i1) | (i == i2);
+	    b1 = eq ? b1 : bb8 + 4 * i;
+	    j1 = eq ? j1 : j8;
+	    j4 = eq ? j4 + 1 : j4;
+	    j8 = eq ? j8 : j8 + 1;
+	    b1[j1] = b[j];
+	}
+    }
+}
+
+static int FASTCALL fp47m_insert4(uint64_t fp, struct fp47map *map, uint32_t pos);
+static int FASTCALL fp47m_insert4re(uint64_t fp, struct fp47map *map, uint32_t pos);
+
+struct re5 {
+    uint32_t i1[5];
+    union bent be[5];
+};
+
+// Reinsert the stashed entries and the pending entry.
+static inline bool restash(struct fp47map *map, uint32_t i1, union bent kbe, bool re)
+{
+    struct re5 re5, ore;
+    struct stash *st = (void *) &map->stash;
+    unsigned n = map->nstash;
+    for (unsigned j = 0; j < n; j++)
+	re5.be[j] = st->be[j], re5.i1[j] = st->i1[j];
+    re5.be[n] = kbe, re5.i1[n] = i1;
+    memset(&ore.i1[1], 0, 16);
+    memset(&ore.be[1], 0, 32);
+    union bent *bb = map->bb;
+    unsigned oj = 0;
+    for (unsigned j = 0; j <= n; j++) {
+	i1 = re5.i1[j], kbe = re5.be[j];
+	uint32_t i2;
+	if (re) {
+	    i1 |= kbe.tag << map->logsize0;
+	    i2 = (i1 ^ kbe.tag) & map->mask1;
+	    i1 &= map->mask1;
+	}
+	else
+	    i2 = (i1 ^ kbe.tag) & map->mask0;
+	union bent *b1 = bb + 4 * i1;
+	if (insert(4, b1, bb + 4 * i2, kbe))
+	    continue;
+	unsigned mask = re ? map->mask1 : map->mask0;
+	int logsize = re ? map->logsize1 : map->logsize0;
+	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, mask, 2 * logsize))
+	    continue;
+	i2 = (i1 ^ kbe.tag) & map->mask0;
+	if (re) {
+	    i1 &= map->mask0;
+	    i1 = (i1 < i2) ? i1 : i2;
+	    i1 |= kbe.tag << map->logsize0;
+	    i1 &= map->mask1;
+	}
+	else
+	    i1 = (i1 < i2) ? i1 : i2;
+	ore.i1[oj] = i1, ore.be[oj++] = kbe;
+    }
+    map->cnt += (size_t) n - oj;
+    map->nstash = oj;
+    if (unlikely(oj)) {
+	memcpy(A16(st->i1), ore.i1, 16);
+	memcpy(A16(st->be), ore.be, 32);
+	map->find = likely(oj == 1) ?
+	    (re ? fp47m_find4st1re : fp47m_find4st1) :
+	    (re ? fp47m_find4st4re : fp47m_find4st4) ;
+	if (unlikely(oj > 4)) {
+	    map->nstash = 4;
+	    return false;
+	}
+    }
+    return true;
+}
+
+static inline int resize2(struct fp47map *map, uint32_t i1, union bent kbe)
+{
+    size_t nb = map->mask0 + (size_t) 1;
+    void *mem = realloc(map->bb, nb * 32 + 16);
+    if (!mem)
+	return -1;
+    // Realign bb to a 32-byte boundary.
+    map->bboff = (uintptr_t) mem & 16;
+    map->bb = mem + map->bboff;
+    reinterp24(mem, nb, map->bb);
+    map->bsize = 4;
+    map->find = fp47m_find4;
+    map->insert = fp47m_insert4;
+    map->prefetch = fp47m_prefetch4;
+    if (restash(map, i1, kbe, false))
+	return 2;
+    return -1;
+}
+
+static int fp47m_resize4(struct fp47map *map, uint32_t i1, union bent kbe)
+{
+    if (map->logsize1 == ((sizeof(size_t) < 5) ? 26 : 32))
+	return -2;
+    size_t nb = map->mask1 + (size_t) 1;
+    void *mem = realloc(map->bb - map->bboff, 2 * nb * 32 + 16);
+    if (!mem)
+	return -1;
+    // XXX Realign bb to a 32-byte boundary.
+    assert(map->bboff == ((uintptr_t) mem & 16));
+    map->bb = mem + map->bboff;
+    map->mask1 = map->mask1 << 1 | 1;
+    map->logsize1++;
+    map->find = fp47m_find4re;
+    map->insert = fp47m_insert4re;
+    map->prefetch = fp47m_prefetch4re;
+    reinterp44(map->bb, nb, map->bb, map->mask0, map->mask1, map->logsize0);
+    if (restash(map, i1, kbe, true))
+	return 2;
+    return -1;
+}
+
+int FASTCALL fp47m_insert2(uint64_t fp, struct fp47map *map, uint32_t pos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    union bent *b1 = bb + 2 * i1;
+    union bent kbe = { .tag = tag, .pos = pos };
+    map->cnt++;
+    if (insert(2, b1, bb + 2 * i2, kbe))
+	return 1;
+    if (1) { // check the fill factor
+	if (kickloop(2, bb, b1, i1, kbe, &i1, &kbe, map->mask0, 2 * map->logsize0))
+	    return 1;
+	i2 = (i1 ^ kbe.tag) & map->mask0;
+	i1 = (i1 < i2) ? i1 : i2;
+	if (putstash(map, i1, kbe, fp47m_find2st1, fp47m_find2st4))
+	    return 1;
+    }
+    else
+	i1 = (i1 < i2) ? i1 : i2;
+    return resize2(map, i1, kbe);
+}
+
+static int FASTCALL fp47m_insert4(uint64_t fp, struct fp47map *map, uint32_t pos)
+{
+    dFP2I;
+    union bent *bb = map->bb;
+    union bent *b1 = bb + 4 * i1;
+    union bent kbe = { .tag = tag, .pos = pos };
+    map->cnt++;
+    if (insert(4, b1, bb + 4 * i2, kbe))
+	return 1;
+    if (1) { // check the fill factor
+	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, map->mask0, 2 * map->logsize0))
+	    return 1;
+	i2 = (i1 ^ kbe.tag) & map->mask0;
+	i1 = (i1 < i2) ? i1 : i2;
+	if (putstash(map, i1, kbe, fp47m_find4st1, fp47m_find4st4))
+	    return 1;
+    }
+    else
+	i1 = (i1 < i2) ? i1 : i2;
+    return fp47m_resize4(map, i1, kbe);
+}
+
+static int FASTCALL fp47m_insert4re(uint64_t fp, struct fp47map *map, uint32_t pos)
+{
+    dFP2I; ResizeI;
+    union bent *bb = map->bb;
+    union bent *b1 = bb + 4 * i1;
+    union bent kbe = { .tag = tag, .pos = pos };
+    map->cnt++;
+    if (insert(4, b1, bb + 4 * i2, kbe))
+	return 1;
+    if (1) { // check the fill factor
+	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, map->mask1, 2 * map->logsize1))
+	    return 1;
+	i2 = (i1 ^ kbe.tag) & map->mask0;
+	i1 &= map->mask0;
+	i1 = (i1 < i2) ? i1 : i2;
+	i1 |= kbe.tag << map->logsize0;
+	i1 &= map->mask1;
+	if (putstash(map, i1, kbe, fp47m_find4st1re, fp47m_find4st4re))
+	    return 1;
+    }
+    return fp47m_resize4(map, i1, kbe);
+}

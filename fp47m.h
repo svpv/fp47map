@@ -22,7 +22,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include <assert.h>
-#include <errno.h>
 #include "fp47map.h"
 
 #define likely(cond) __builtin_expect(!!(cond), 1)
@@ -78,6 +77,11 @@ static inline uint32_t mod32(uint64_t fp)
     } while (0)
 
 #pragma GCC visibility push(hidden)
+
+// The initial set of virtual functions.
+unsigned FASTCALL fp47m_find2(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
+int FASTCALL fp47m_insert2(uint64_t fp, struct fp47map *map, uint32_t pos);
+void FASTCALL fp47m_prefetch2(uint64_t fp, const struct fp47map *map);
 
 #if defined(__i386__) || defined(__x86_64__)
 unsigned FASTCALL fp47m_find2_sse4(uint64_t fp, const struct fp47map *map, uint32_t *mpos);
