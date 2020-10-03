@@ -490,14 +490,15 @@ static inline bool restash(struct fp47map *map, uint32_t i1, uint32_t tag, uint3
 
 static inline int resize2(struct fp47map *map, uint32_t i1, uint32_t tag, uint32_t pos)
 {
+    if (sizeof(size_t) < 5 && map->logsize0 == 27)
+	return -2;
     size_t nb = map->mask0 + (size_t) 1;
-    void *mem = realloc(map->bb, nb * 32 + 16);
-    if (!mem)
-	return -1;
-    // Realign bb to a 32-byte boundary.
-    map->bboff = (uintptr_t) mem & 16;
-    map->bb = mem + map->bboff;
-    reinterp24(mem, nb, map->bb);
+    void *bb = allocX2(&map->bb, nb * 16);
+    if (!bb)
+	return -2;
+    reinterp24(map->bb, nb, bb);
+    if (map->bb != bb)
+	free(map->bb), map->bb = bb;
     map->bsize = 4;
     map->find = fp47m_find4_sse4;
     map->insert = fp47m_insert4_sse4;
@@ -512,18 +513,17 @@ static int fp47m_resize4_sse4(struct fp47map *map, uint32_t i1, uint32_t tag, ui
     if (map->logsize1 == ((sizeof(size_t) < 5) ? 26 : 32))
 	return -2;
     size_t nb = map->mask1 + (size_t) 1;
-    void *mem = realloc(map->bb - map->bboff, 2 * nb * 32 + 16);
-    if (!mem)
-	return -1;
-    // XXX Realign bb to a 32-byte boundary.
-    assert(map->bboff == ((uintptr_t) mem & 16));
-    map->bb = mem + map->bboff;
+    void *bb = allocX2(&map->bb, nb * 32);
+    if (!bb)
+	return -2;
     map->mask1 = map->mask1 << 1 | 1;
     map->logsize1++;
+    reinterp44(map->bb, nb, bb, map->mask0, map->mask1);
+    if (map->bb != bb)
+	free(map->bb), map->bb = bb;
     map->find = fp47m_find4re_sse4;
     map->insert = fp47m_insert4re_sse4;
     map->prefetch = fp47m_prefetch4re_sse4;
-    reinterp44(map->bb, nb, map->bb, map->mask0, map->mask1);
     if (restash(map, i1, tag, pos, true))
 	return 2;
     return -1;

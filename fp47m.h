@@ -22,6 +22,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/mman.h>
 #include "fp47map.h"
 
 #define likely(cond) __builtin_expect(!!(cond), 1)
@@ -90,3 +91,25 @@ void FASTCALL fp47m_prefetch2_sse4(uint64_t fp, const struct fp47map *map);
 #endif
 
 #pragma GCC visibility pop
+
+// malloc/mmap threshold
+#define MTHRESH 99999
+
+static inline void *allocX2(void **pp, size_t bytes)
+{
+    void *p;
+    if (bytes >= MTHRESH) {
+	p = mremap(*pp, bytes, 2 * bytes, MREMAP_MAYMOVE);
+	if (p == MAP_FAILED)
+	    return NULL;
+	*pp = p;
+    }
+    else if (2 * bytes >= MTHRESH) {
+	p = mmap(NULL, 2 * bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (p == MAP_FAILED)
+	    return NULL;
+    }
+    else
+	p = aligned_alloc(32, 2 * bytes);
+    return p;
+}

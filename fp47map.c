@@ -20,6 +20,18 @@
 
 #include "fp47m.h"
 
+#if UINTPTR_MAX > UINT32_MAX
+#define MALIGN 16
+#elif defined(__GLIBC_PREREQ)
+#if defined(__i386__) && __GLIBC_PREREQ(2, 26)
+#define MALIGN 16
+#else
+#define MALIGN 8
+#endif
+#else // assume musl or jemalloc
+#define MALIGN 16
+#endif
+
 struct fp47map *fp47map_new(int logsize)
 {
     assert(logsize >= 0);
@@ -30,16 +42,30 @@ struct fp47map *fp47map_new(int logsize)
     if (logsize > ((sizeof(size_t) < 5) ? 27 : 32))
 	return NULL;
 
-    // Starting with two slots per bucket.
-    size_t nb = (size_t) 1 << logsize;
-    size_t nbe = 2 * nb;
-    union bent *bb = calloc(nbe, sizeof BE0);
-    if (!bb)
+    struct fp47map *map = aligned_alloc(16, sizeof *map);
+    if (!map)
 	return NULL;
 
-    struct fp47map *map = malloc(sizeof *map);
-    if (!map)
-	return free(bb), NULL;
+    size_t nb = (size_t) 1 << logsize;
+    size_t bytes = 16 * nb;
+    void *bb;
+    if (bytes >= MTHRESH) {
+	bb = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	if (bb == MAP_FAILED)
+	    return free(map), NULL;
+    }
+    else if (MALIGN >= 16) {
+	bb = calloc(nb, 16);
+	if (!bb)
+	    return free(map), NULL;
+	assert((uintptr_t) bb % 16 == 0);
+    }
+    else {
+	bb = aligned_alloc(16, bytes);
+	if (!bb)
+	    return free(map), NULL;
+	memset(bb, 0, 16 * nb);
+    }
 
     map->bb = bb;
     map->cnt = 0;
@@ -47,7 +73,6 @@ struct fp47map *fp47map_new(int logsize)
     map->nstash = 0;
     map->logsize0 = map->logsize1 = logsize;
     map->mask0 = map->mask1 = nb - 1;
-    map->bboff = 0;
 
 #if defined(__i386__) || defined(__x86_64__)
     if (__builtin_cpu_supports("sse4.1") && __builtin_cpu_supports("popcnt")) {
@@ -69,7 +94,14 @@ void fp47map_free(struct fp47map *map)
 {
     if (!map)
 	return;
-    free(map->bb - map->bboff);
+    size_t nb = map->mask1 + (size_t) 1;
+    size_t bytes = nb * map->bsize * 8;
+    if (bytes >= MTHRESH) {
+	int rc = munmap(map->bb, bytes);
+	assert(rc == 0);
+    }
+    else
+	free(map->bb);
     free(map);
 }
 
@@ -396,14 +428,15 @@ static inline bool restash(struct fp47map *map, uint32_t i1, union bent kbe, boo
 
 static inline int resize2(struct fp47map *map, uint32_t i1, union bent kbe)
 {
+    if (sizeof(size_t) < 5 && map->logsize0 == 27)
+	return -2;
     size_t nb = map->mask0 + (size_t) 1;
-    void *mem = realloc(map->bb, nb * 32 + 16);
-    if (!mem)
-	return -1;
-    // Realign bb to a 32-byte boundary.
-    map->bboff = (uintptr_t) mem & 16;
-    map->bb = mem + map->bboff;
-    reinterp24(mem, nb, map->bb);
+    void *bb = allocX2(&map->bb, nb * 16);
+    if (!bb)
+	return -2;
+    reinterp24(map->bb, nb, bb);
+    if (map->bb != bb)
+	free(map->bb), map->bb = bb;
     map->bsize = 4;
     map->find = fp47m_find4;
     map->insert = fp47m_insert4;
@@ -418,18 +451,17 @@ static int fp47m_resize4(struct fp47map *map, uint32_t i1, union bent kbe)
     if (map->logsize1 == ((sizeof(size_t) < 5) ? 26 : 32))
 	return -2;
     size_t nb = map->mask1 + (size_t) 1;
-    void *mem = realloc(map->bb - map->bboff, 2 * nb * 32 + 16);
-    if (!mem)
-	return -1;
-    // XXX Realign bb to a 32-byte boundary.
-    assert(map->bboff == ((uintptr_t) mem & 16));
-    map->bb = mem + map->bboff;
+    void *bb = allocX2(&map->bb, nb * 32);
+    if (!bb)
+	return -2;
     map->mask1 = map->mask1 << 1 | 1;
     map->logsize1++;
+    reinterp44(map->bb, nb, bb, map->mask0, map->mask1, map->logsize0);
+    if (map->bb != bb)
+	free(map->bb), map->bb = bb;
     map->find = fp47m_find4re;
     map->insert = fp47m_insert4re;
     map->prefetch = fp47m_prefetch4re;
-    reinterp44(map->bb, nb, map->bb, map->mask0, map->mask1, map->logsize0);
     if (restash(map, i1, kbe, true))
 	return 2;
     return -1;

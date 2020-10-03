@@ -98,8 +98,6 @@ struct fp47map {
     uint8_t logsize0, logsize1;
     // The corresponding masks, help indexing into the buckets.
     uint32_t mask0, mask1;
-    // Offset of map->bb within malloc'd memory: 0, 8, 16, or 24.
-    uint8_t bboff;
 };
 
 // Obtain the set of positions matching a fingerprint.
