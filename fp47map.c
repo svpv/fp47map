@@ -397,15 +397,14 @@ static inline bool restash(struct fp47map *map, uint32_t i1, union bent kbe, boo
 	int logsize = re ? map->logsize1 : map->logsize0;
 	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, mask, 2 * logsize))
 	    continue;
-	i2 = (i1 ^ kbe.tag) & map->mask0;
 	if (re) {
-	    i1 &= map->mask0;
-	    i1 = (i1 < i2) ? i1 : i2;
-	    i1 |= kbe.tag << map->logsize0;
-	    i1 &= map->mask1;
+	    i2 = (i1 ^ kbe.tag) & map->mask1;
+	    i1 = ((i1 & map->mask0) < (i2 & map->mask0)) ? i1 : i2;
 	}
-	else
+	else {
+	    i2 = (i1 ^ kbe.tag) & map->mask0;
 	    i1 = (i1 < i2) ? i1 : i2;
+	}
 	ore.i1[oj] = i1, ore.be[oj++] = kbe;
     }
     map->cnt += (size_t) n - oj;
@@ -521,11 +520,8 @@ static int FASTCALL fp47m_insert4re(uint64_t fp, struct fp47map *map, uint32_t p
     if (1) { // check the fill factor
 	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, map->mask1, 2 * map->logsize1))
 	    return 1;
-	i2 = (i1 ^ kbe.tag) & map->mask0;
-	i1 &= map->mask0;
-	i1 = (i1 < i2) ? i1 : i2;
-	i1 |= kbe.tag << map->logsize0;
-	i1 &= map->mask1;
+	i2 = (i1 ^ kbe.tag) & map->mask1;
+	i1 = ((i1 & map->mask0) < (i2 & map->mask0)) ? i1 : i2;
 	if (putstash(map, i1, kbe, fp47m_find4st1re, fp47m_find4st4re))
 	    return 1;
     }
