@@ -423,7 +423,7 @@ static inline bool restash(struct fp47map *map, uint32_t i1, union bent kbe, boo
     return true;
 }
 
-static inline int resize2(struct fp47map *map, uint32_t i1, union bent kbe)
+static NOINLINE int fp47m_resize2(struct fp47map *map, uint32_t i1, union bent kbe)
 {
     if (sizeof(size_t) < 5 && map->logsize0 == 27)
 	return -2;
@@ -443,7 +443,7 @@ static inline int resize2(struct fp47map *map, uint32_t i1, union bent kbe)
     return -1;
 }
 
-static int fp47m_resize4(struct fp47map *map, uint32_t i1, union bent kbe)
+static NOINLINE int fp47m_resize4(struct fp47map *map, uint32_t i1, union bent kbe)
 {
     if (map->logsize1 == ((sizeof(size_t) < 5) ? 26 : 32))
 	return -2;
@@ -483,7 +483,7 @@ int FASTCALL fp47m_insert2(uint64_t fp, struct fp47map *map, uint32_t pos)
     }
     else
 	i1 = (i1 < i2) ? i1 : i2;
-    return resize2(map, i1, kbe);
+    return fp47m_resize2(map, i1, kbe);
 }
 
 static int FASTCALL fp47m_insert4(uint64_t fp, struct fp47map *map, uint32_t pos)

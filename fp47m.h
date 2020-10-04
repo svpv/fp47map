@@ -32,6 +32,7 @@
 
 // The inline functions rely heavily on constant propagation.
 #define inline inline __attribute__((always_inline))
+#define NOINLINE __attribute__((noinline))
 
 union bent {
     uint64_t u64;
