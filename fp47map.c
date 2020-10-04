@@ -228,7 +228,6 @@ static unsigned FASTCALL fp47m_find4st1re(uint64_t fp, const struct fp47map *map
     dFP2I; ResizeI;
     union bent *bb = map->bb;
     unsigned n = find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
-    i1 = (i1 < i2) ? i1 : i2;
     FindSt1(0);
     return n;
 }
@@ -238,7 +237,6 @@ static unsigned FASTCALL fp47m_find4st4re(uint64_t fp, const struct fp47map *map
     dFP2I; ResizeI;
     union bent *bb = map->bb;
     unsigned n = find(4, bb + 4 * i1, bb + 4 * i2, tag, mpos);
-    i1 = (i1 < i2) ? i1 : i2;
     FindSt1(0); FindSt1(1); FindSt1(2); FindSt1(3);
     return n;
 }
