@@ -48,6 +48,7 @@ static void recheck(struct fp47map *map, unsigned imax)
 	e0 += n - 1;
 	e1 += fp47map_find(map, nasam(i + 1), mpos);
     }
+    assert(map->cnt + map->nstash == imax / 2 + 1);
     assert(e0 <= 3);
     assert(e1 <= 1);
 }
