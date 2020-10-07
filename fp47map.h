@@ -98,6 +98,8 @@ struct fp47map {
     uint8_t logsize0, logsize1;
     // The corresponding masks, help indexing into the buckets.
     uint32_t mask0, mask1;
+    // Max iterations in the kick loop.
+    uint8_t maxkick;
 };
 
 // Obtain the set of positions matching a fingerprint.

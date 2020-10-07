@@ -459,8 +459,7 @@ static inline bool restash(struct fp47map *map, uint32_t i1, uint32_t tag, uint3
 	if (insert4(b1, &bb[i2], tag, pos))
 	    continue;
 	unsigned mask = re ? map->mask1 : map->mask0;
-	int logsize = re ? map->logsize1 : map->logsize0;
-	if (kickloop4(bb, b1, &i1, &tag, &pos, mask, 2 * logsize))
+	if (kickloop4(bb, b1, &i1, &tag, &pos, mask, map->maxkick))
 	    continue;
 	if (re) {
 	    i2 = (i1 ^ tag) & map->mask1;
@@ -517,6 +516,7 @@ static NOINLINE int fp47m_resize4_sse4(struct fp47map *map, uint32_t i1, uint32_
 	return -2;
     map->mask1 = map->mask1 << 1 | 1;
     map->logsize1++;
+    map->maxkick = logsize2maxkick(map->logsize1);
     reinterp44(map->bb, nb, bb, map->mask0, map->mask1);
     if (map->bb != bb)
 	free(map->bb), map->bb = bb;
@@ -536,8 +536,8 @@ int FASTCALL fp47m_insert2_sse4(uint64_t fp, struct fp47map *map, uint32_t pos)
     map->cnt++;
     if (insert2(b1, &bb[i2], tag, pos))
 	return 1;
-    if (1) { // check the fill factor
-	if (kickloop2(bb, b1, &i1, &tag, &pos, map->mask0, 2 * map->logsize0))
+    if (likely(!full2(map->cnt, map->mask0))) {
+	if (kickloop2(bb, b1, &i1, &tag, &pos, map->mask0, map->maxkick))
 	    return 1;
 	i2 = (i1 ^ tag) & map->mask0;
 	i1 = (i1 < i2) ? i1 : i2;
@@ -557,8 +557,8 @@ static int FASTCALL fp47m_insert4_sse4(uint64_t fp, struct fp47map *map, uint32_
     map->cnt++;
     if (insert4(b1, &bb[i2], tag, pos))
 	return 1;
-    if (1) { // check the fill factor
-	if (kickloop4(bb, b1, &i1, &tag, &pos, map->mask0, 2 * map->logsize0))
+    if (likely(!full4(map->cnt, map->mask0))) {
+	if (kickloop4(bb, b1, &i1, &tag, &pos, map->mask0, map->maxkick))
 	    return 1;
 	i2 = (i1 ^ tag) & map->mask0;
 	i1 = (i1 < i2) ? i1 : i2;
@@ -578,8 +578,8 @@ static int FASTCALL fp47m_insert4re_sse4(uint64_t fp, struct fp47map *map, uint3
     map->cnt++;
     if (insert4(b1, &bb[i2], tag, pos))
 	return 1;
-    if (1) { // check the fill factor
-	if (kickloop4(bb, b1, &i1, &tag, &pos, map->mask1, 2 * map->logsize1))
+    if (likely(!full4(map->cnt, map->mask1))) {
+	if (kickloop4(bb, b1, &i1, &tag, &pos, map->mask1, map->maxkick))
 	    return 1;
 	i2 = (i1 ^ tag) & map->mask1;
 	i1 = ((i1 & map->mask0) < (i2 & map->mask0)) ? i1 : i2;

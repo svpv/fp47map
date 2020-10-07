@@ -78,6 +78,28 @@ static inline uint32_t mod32(uint64_t fp)
 	i2 &= map->mask1;			\
     } while (0)
 
+// Approximates x * log2(x) for x = 4..32.
+static inline unsigned logsize2maxkick(unsigned x)
+{
+    return 8 + (x - 4) * 4 + (x > 9) * (x - 9) + (x > 15) * (x - 15);
+}
+
+// We limit the fill factor, to keep the insertions fast.
+#ifndef FP47M_BRIM
+static inline bool full2(size_t cnt, size_t mask)
+{
+    return cnt > mask + 9 * mask / 16;
+}
+
+static inline bool full4(size_t cnt, size_t mask)
+{
+    return cnt > 3 * mask + 5 * mask / 8;
+}
+#else // to ensure that the stash works
+#define full2(cnt, mask) 0
+#define full4(cnt, mask) 0
+#endif
+
 #pragma GCC visibility push(hidden)
 
 // The initial set of virtual functions.

@@ -73,6 +73,7 @@ struct fp47map *fp47map_new(int logsize)
     map->nstash = 0;
     map->logsize0 = map->logsize1 = logsize;
     map->mask0 = map->mask1 = nb - 1;
+    map->maxkick = logsize2maxkick(logsize);
 
 #if defined(__i386__) || defined(__x86_64__)
     if (__builtin_cpu_supports("sse4.1") && __builtin_cpu_supports("popcnt")) {
@@ -394,8 +395,7 @@ static inline bool restash(struct fp47map *map, uint32_t i1, union bent kbe, boo
 	if (insert(4, b1, bb + 4 * i2, kbe))
 	    continue;
 	unsigned mask = re ? map->mask1 : map->mask0;
-	int logsize = re ? map->logsize1 : map->logsize0;
-	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, mask, 2 * logsize))
+	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, mask, map->maxkick))
 	    continue;
 	if (re) {
 	    i2 = (i1 ^ kbe.tag) & map->mask1;
@@ -453,6 +453,7 @@ static NOINLINE int fp47m_resize4(struct fp47map *map, uint32_t i1, union bent k
 	return -2;
     map->mask1 = map->mask1 << 1 | 1;
     map->logsize1++;
+    map->maxkick = logsize2maxkick(map->logsize1);
     reinterp44(map->bb, nb, bb, map->mask0, map->mask1, map->logsize0);
     if (map->bb != bb)
 	free(map->bb), map->bb = bb;
@@ -473,8 +474,8 @@ int FASTCALL fp47m_insert2(uint64_t fp, struct fp47map *map, uint32_t pos)
     map->cnt++;
     if (insert(2, b1, bb + 2 * i2, kbe))
 	return 1;
-    if (1) { // check the fill factor
-	if (kickloop(2, bb, b1, i1, kbe, &i1, &kbe, map->mask0, 2 * map->logsize0))
+    if (likely(!full2(map->cnt, map->mask0))) {
+	if (kickloop(2, bb, b1, i1, kbe, &i1, &kbe, map->mask0, map->maxkick))
 	    return 1;
 	i2 = (i1 ^ kbe.tag) & map->mask0;
 	i1 = (i1 < i2) ? i1 : i2;
@@ -495,8 +496,8 @@ static int FASTCALL fp47m_insert4(uint64_t fp, struct fp47map *map, uint32_t pos
     map->cnt++;
     if (insert(4, b1, bb + 4 * i2, kbe))
 	return 1;
-    if (1) { // check the fill factor
-	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, map->mask0, 2 * map->logsize0))
+    if (likely(!full4(map->cnt, map->mask0))) {
+	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, map->mask0, map->maxkick))
 	    return 1;
 	i2 = (i1 ^ kbe.tag) & map->mask0;
 	i1 = (i1 < i2) ? i1 : i2;
@@ -517,8 +518,8 @@ static int FASTCALL fp47m_insert4re(uint64_t fp, struct fp47map *map, uint32_t p
     map->cnt++;
     if (insert(4, b1, bb + 4 * i2, kbe))
 	return 1;
-    if (1) { // check the fill factor
-	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, map->mask1, 2 * map->logsize1))
+    if (likely(!full4(map->cnt, map->mask1))) {
+	if (kickloop(4, bb, b1, i1, kbe, &i1, &kbe, map->mask1, map->maxkick))
 	    return 1;
 	i2 = (i1 ^ kbe.tag) & map->mask1;
 	i1 = ((i1 & map->mask0) < (i2 & map->mask0)) ? i1 : i2;
