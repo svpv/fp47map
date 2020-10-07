@@ -503,6 +503,8 @@ static int FASTCALL fp47m_insert4(uint64_t fp, struct fp47map *map, uint32_t pos
 	i1 = (i1 < i2) ? i1 : i2;
 	if (putstash(map, i1, kbe, fp47m_find4st1, fp47m_find4st4))
 	    return 1;
+	if (map->cnt / 2 <= map->mask0)
+	    return -1;
     }
     else
 	i1 = (i1 < i2) ? i1 : i2;
@@ -525,6 +527,8 @@ static int FASTCALL fp47m_insert4re(uint64_t fp, struct fp47map *map, uint32_t p
 	i1 = ((i1 & map->mask0) < (i2 & map->mask0)) ? i1 : i2;
 	if (putstash(map, i1, kbe, fp47m_find4st1re, fp47m_find4st4re))
 	    return 1;
+	if (map->cnt / 2 <= map->mask1)
+	    return -1;
     }
     return fp47m_resize4(map, i1, kbe);
 }
